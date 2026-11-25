@@ -258,7 +258,7 @@ for (const width of [320, 768, 1024, 1440]) {
     await page.getByRole('tab', { name: 'Settings & routing', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Serving limits' })).toBeVisible()
     const panel = await page.locator('.proxy-panels').boundingBox()
-    for (const field of await page.locator('.settings-grid .field:visible').all()) {
+    for (const field of await page.locator('.page-form .field:visible').all()) {
       const box = await field.boundingBox()
       expect(box.x).toBeGreaterThanOrEqual(panel.x - 1)
       expect(box.x + box.width).toBeLessThanOrEqual(panel.x + panel.width + 1)
@@ -268,7 +268,7 @@ for (const width of [320, 768, 1024, 1440]) {
     )
     await page.getByRole('tab', { name: 'Access keys', exact: true }).click()
     await expect(page.locator('.key-usage')).toContainText('confirmed')
-    const card = await page.locator('.proxy-card:visible').first().boundingBox()
+    const card = await page.locator('.page-section:visible').first().boundingBox()
     const usage = await page.locator('.key-usage').boundingBox()
     expect(usage.x).toBeGreaterThanOrEqual(card.x - 1)
     expect(usage.x + usage.width).toBeLessThanOrEqual(card.x + card.width + 1)
@@ -340,7 +340,9 @@ for (const width of [1440, 390]) {
     const search = dialog.getByRole('combobox')
     await expect(search).toBeFocused()
     await search.fill('backup')
-    await expect(dialog.getByRole('option')).toHaveCount(1)
+    const backupOption = dialog.getByRole('option')
+    await expect(backupOption).toHaveCount(1)
+    await expect(backupOption).toHaveAttribute('aria-selected', 'true')
     await search.press('Enter')
     await expect(page).toHaveURL(/\/system#config-backup$/)
     await expect(page.locator('#main-content')).toBeFocused()

@@ -29,7 +29,31 @@ function mountPanel(props = {}) {
 describe('AudioResultPanel', () => {
   it('renders nothing when empty', () => {
     const wrapper = mountPanel()
-    expect(wrapper.find('.config-card').exists()).toBe(false)
+    expect(wrapper.find('.page-section').exists()).toBe(false)
+    expect(wrapper.get('.audio-result-region').attributes('role')).toBe('status')
+  })
+
+  it('exposes a polite live region and busy state for results', async () => {
+    const wrapper = mountPanel({ loading: true })
+    const region = wrapper.get('.audio-result-region')
+    expect(region.attributes('role')).toBe('status')
+    expect(region.attributes('aria-live')).toBe('polite')
+    expect(region.attributes('aria-busy')).toBe('true')
+
+    await wrapper.setProps({
+      loading: false,
+      clips: [
+        {
+          id: 'audio',
+          label: 'Audio',
+          url: 'blob:a',
+          blob: new Blob([new Uint8Array([1])], { type: 'audio/wav' }),
+          filename: 'audio.wav',
+        },
+      ],
+    })
+    expect(region.attributes('aria-busy')).toBe('false')
+    expect(wrapper.find('audio.audio-player').exists()).toBe(true)
   })
 
   it('renders player and download for each audio clip', async () => {

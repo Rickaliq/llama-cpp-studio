@@ -1,0 +1,21 @@
+{
+  "backend/build_progress.py": 1224,
+  "backend/cuda_installer.py": 2013,
+  "backend/data_store.py": 1187,
+  "backend/engines/definitions/schema.py": 2255,
+  "backend/engines/scan/help_parsers.py": 2463,
+  "backend/models/hub.py": 2468,
+  "backend/proxy/studio/dataplane.py": 2118,
+  "backend/proxy/studio/manager.py": 447,
+  "backend/routes/llama_versions.py": 2136,
+  "backend/routes/models.py": 2767,
+  "frontend/src/components/audio/AudioModelConfig.vue": 1230,
+  "frontend/src/components/system/HardwarePanel.vue": 95,
+  "frontend/src/composables/useAudioModelConfig.js": 1405,
+  "frontend/src/stores/engines.js": 793,
+  "frontend/src/views/EnginesView.vue": 3965,
+  "frontend/src/views/ModelConfig.vue": 3740,
+  "frontend/src/views/ModelLibrary.vue": 1600,
+  "frontend/src/views/ModelSearch.vue": 3240,
+  "frontend/src/views/ProxyView.vue": 1212
+}

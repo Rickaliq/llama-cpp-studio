@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { engineCardCta, engineCardOrder, engineMatchesFilters, runnableEngineIds } from './engineReadiness'
+import {
+  engineCardCta,
+  engineCardOrder,
+  engineMatchesFilters,
+  engineSetupState,
+  runnableEngineIds,
+} from './engineReadiness'
 
 describe('engine readiness', () => {
   it('treats only runnable descriptors as ready, including Unsloth', () => {
@@ -16,6 +22,34 @@ describe('engine readiness', () => {
     expect(engineCardOrder({ runnable: false, installed_versions: 0 })).toBe(2)
   })
 
+  it('distinguishes a missing engine from an inactive install and a ready engine', () => {
+    expect(engineSetupState([])).toEqual({ key: 'missing', names: [] })
+    expect(
+      engineSetupState([{ id: 'a', label: 'Engine A', installed_versions: 1, runnable: false }]),
+    ).toEqual({ key: 'inactive', names: ['Engine A'] })
+    expect(
+      engineSetupState([
+        { id: 'a', label: 'Engine A', installed_versions: 2, runnable: false },
+        { id: 'b', label: 'Engine B', installed_versions: 1, runnable: true },
+      ]),
+    ).toEqual({ key: 'ready', names: ['Engine B'] })
+  })
+
+  it('does not count a feature-disabled install as ready or installed', () => {
+    expect(
+      engineSetupState([
+        { id: 'a', label: 'Engine A', installed_versions: 1, runnable: true, enabled: false },
+      ]),
+    ).toEqual({ key: 'missing', names: [] })
+  })
+
+  it('treats an active version without an installed count as installed', () => {
+    expect(engineSetupState([{ id: 'a', label: 'Engine A', active_version: 'build-1' }])).toEqual({
+      key: 'inactive',
+      names: ['Engine A'],
+    })
+  })
+
   it('labels an active version Manage and an inactive install Activate', () => {
     expect(engineCardCta({ active_version: 'b1', installed_versions: 1 })).toBe('Manage')
     expect(engineCardCta({ active_version: null, installed_versions: 1 })).toBe('Activate')
@@ -24,13 +58,25 @@ describe('engine readiness', () => {
 
   it('narrows by task and hardware without hiding engines when the filter is open', () => {
     const audio = { id: 'audio_cpp', tasks: ['asr'], artifact_formats: ['gguf'] }
-    const llama = { id: 'llama_cpp', tasks: ['text-generation', 'embeddings'], artifact_formats: ['gguf'], supports_embeddings: true }
-    const vllm = { id: 'vllm', tasks: ['text-generation'], artifact_formats: ['safetensors'], supports_embeddings: true }
+    const llama = {
+      id: 'llama_cpp',
+      tasks: ['text-generation', 'embeddings'],
+      artifact_formats: ['gguf'],
+      supports_embeddings: true,
+    }
+    const vllm = {
+      id: 'vllm',
+      tasks: ['text-generation'],
+      artifact_formats: ['safetensors'],
+      supports_embeddings: true,
+    }
     expect(engineMatchesFilters(vllm, { task: 'all', hardware: 'all' })).toBe(true)
     expect(engineMatchesFilters(audio, { task: 'text' })).toBe(false)
     expect(engineMatchesFilters(llama, { task: 'embeddings' })).toBe(true)
     expect(engineMatchesFilters(vllm, { hardware: 'cpu' })).toBe(false)
-    expect(engineMatchesFilters({ id: 'sglang_v100', gpu_archs: ['sm70'] }, { hardware: 'sm70' })).toBe(true)
+    expect(
+      engineMatchesFilters({ id: 'sglang_v100', gpu_archs: ['sm70'] }, { hardware: 'sm70' }),
+    ).toBe(true)
   })
 
   it('derives audio/text/cpu membership from descriptor data, not engine ids', () => {

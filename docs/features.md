@@ -35,8 +35,8 @@ The footer shows compact application/service status and a link to System. Activi
 | `sglang`        | SGLang            | safetensors/Hugging Face snapshot                        | Managed Python environment; SGLang server and discovered runtime profiles.               |
 | `sglang_v100`   | SGLang V100       | safetensors/Hugging Face snapshot                        | Source installation in a managed Python environment with a V100-specific build workflow. |
 | `sglang_sxm2`   | SGLang SXM2       | safetensors/Hugging Face snapshot                        | Source installation in a managed Python environment with a V100-SXM2 build workflow.     |
-| `sglang_sm70`   | SGLang SM70       | safetensors/Hugging Face snapshot                        | Source installation in a managed Python environment with a Volta/SM70 build workflow.    |
-| `audio_cpp`     | audio.cpp         | Prepared audio packages and discovered GGUF audio models | Source/CMake build; model-scoped `audiocpp_server`.                                      |
+| `revolta`       | ReVolta           | safetensors/Hugging Face snapshot                        | Managed Python environment; SM70-only release wheel from `Leonccaa/ReVolta`.            |
+| `audio_cpp`     | audio.cpp         | Prepared audio packages and discovered GGUF audio models | Source/CMake build; model-scoped `audiocpp_server`; validated through 0.9.5.             |
 
 The shared engine registry describes artifact formats, package kinds, tasks, input/output modalities, installation type, scanner type, active path fields, and capability hints. Compatibility requires a suitable installed runtime and model; a registry task label does not certify every model/build combination.
 
@@ -44,15 +44,36 @@ The shared engine registry describes artifact formats, package kinds, tasks, inp
 
 Engines shows installed versions, active installations, source/build state, and available actions. Multiple installed versions can coexist. Activation selects the installation used by the runtime compiler. Installation, source synchronization, builds, scans, and removals expose progress and failure details.
 
+audio.cpp reports a compatibility ceiling of `0.9.5`: a newer version still installs and activates unblocked, but Engine status and the version row mark it unsupported (`engine_supported: false`) with a short note instead of implying it was validated. Branch/commit/local builds stay `unknown`. See [audio.cpp engine compatibility](audio-cpp-compatibility.md).
+
 Source-based engines accept repository and tracking-ref settings. Saved build settings control supported CMake flags and engine-specific options. A version can carry its own build configuration; source synchronization uses that configuration when present. Custom repositories retain their own identity and source-sync workflow. Unsloth installations select a published artifact appropriate to the detected host and verify its checksum.
 
-Python engines use Studio-managed environments. Their settings include release/package selection and source repository/ref choices where supported by the installer. Source installation uses the selected repository and engine-specific build environment. The SM70 SGLang engines (`sglang_v100`, `sglang_sxm2`, `sglang_sm70`) each use their dedicated source workflow, a managed Python environment, and Studio-managed CUDA 12.8; each installer supplies the selected fork's dependency/build steps while Studio supplies host-tool and CUDA paths.
+Python engines use Studio-managed environments. Their settings include release/package selection and source repository/ref choices where supported by the installer. Source installation uses the selected repository and engine-specific build environment. The SM70 SGLang engines (`sglang_v100`, `sglang_sxm2`) each use their dedicated source workflow, a managed Python environment, and Studio-managed CUDA 12.8; each installer supplies the selected fork's dependency/build steps while Studio supplies host-tool and CUDA paths.
+
+Engine lifecycle is derived from the definition. A `python_venv` definition uses the shared venv installer; a definition that declares a `native_host` is served by that host through the same generic `/api/engines/{engine_id}` verbs (install, status, cancel, build settings, remove and declared update checks), with `install-source` returning 405 unless a source recipe exists. This gives a future native engine the generic surface without a new engine route or engine-ID branch; the host mechanism itself remains one shared, kind-keyed implementation. See [engine onboarding](engine-onboarding.md).
+
+ReVolta is a release-first V100/SM70 vLLM fork distributed as the `revolta` wheel; its import name and CLI stay `vllm`, so Studio reuses the vLLM runtime mechanism, parameter scanner and managed build environment. A Strata integration is planned, not registered; its Terminal owns engine acquisition, model run-config preparation and a background supervisor, so a future native host must implement that contract before the engine is declared. See [Strata engine: planned integration](strata-engine.md).
 
 Engine activation and explicit rescanning populate the parameter catalog. Source build, Python package installation, and prebuilt installation have different hardware and dependency requirements; installer errors and build logs provide the concrete result.
 
 ### Installation references and removal
 
 Published or retained launch generations can reference an engine installation or model path. Removal checks those references and reports a conflict when the path is still required. Applicable removal requests expose `retire_launch_references` for an explicit retirement decision; a running reference has its own restriction and requires the relevant process to stop. Retirement affects the available launch/recovery generations, so installation deletion is distinct from simply choosing another active version.
+
+### Managed compile and JIT caches
+
+Compilation caches belong to one engine installation, not to the service account's home directory. Studio therefore points every declared cache variable at `<install dir>/caches/<variable-slug>`: Triton, TorchInductor, torch extensions, TileLang, TVM-FFI, FlashInfer, CuTe DSL, DeepGEMM, CUDA driver JIT, tiktoken/model-tokenizer data, and the engines' own roots (SGLang, vLLM). The installer's build and smoke steps use the same paths as the server, so a start reuses the kernels the installation already produced instead of recompiling them.
+
+| Engine family | Managed cache variables |
+| --- | --- |
+| vLLM, 1Cat-vLLM | The Python JIT baseline plus `VLLM_CACHE_ROOT`, `VLLM_ASSETS_CACHE`, `VLLM_XLA_CACHE_PATH`, `VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR`, `FLYDSL_RUNTIME_CACHE_DIR`. |
+| SGLang (upstream and the V100, SXM2, SM70 forks) | The Python JIT baseline plus `SGLANG_CACHE_DIR`, `SGLANG_DIFFUSION_CACHE_ROOT`, `SGLANG_DIFFUSION_HOST_SPILL_DIR`, `SGLANG_CUTE_AOT_CACHE_DIR`, `SGLANG_DG_CACHE_DIR`, `SGLANG_JIT_CACHE_DIR`, `SGLANG_QWEN4_PLE_FILE_DIR`, the SM70/V100 torch-extension build directories, `HUMMING_CACHE_DIR`, `HUMMING_TMP_DIR`. |
+| LMDeploy | The Python JIT baseline; LMDeploy has no cache root of its own and relies on the shared stack variables. |
+| llama.cpp, ik_llama.cpp, Unsloth llama.cpp, audio.cpp | `XDG_CACHE_HOME` and `CUDA_CACHE_PATH` (driver PTX/cubin cache; audio.cpp also uses the XDG base for its eSpeak extraction cache). Build objects use Studio's `ccache` instead. |
+
+The Python JIT baseline is `XDG_CACHE_HOME`, `TRITON_HOME`, `TRITON_CACHE_DIR`, `TORCHINDUCTOR_CACHE_DIR`, `TORCH_EXTENSIONS_DIR`, `TVM_FFI_CACHE_DIR`, `TILELANG_CACHE_DIR`, `CUTE_DSL_CACHE_DIR`, `FLASHINFER_WORKSPACE_BASE`, `OUTLINES_CACHE_DIR`, `DG_JIT_CACHE_DIR`, `TIKTOKEN_CACHE_DIR`, `DATA_GYM_CACHE_DIR`, `KERNELS_CACHE`, and `CUDA_CACHE_PATH`.
+
+The tree is per installation version. An in-place retry/reinstall or a source synchronization removes `caches/` before rebuilding, so a stale kernel from a different source or toolchain cannot be reused; a newly installed version starts empty. Removing the version removes its caches. Model-weight and download caches stay in Studio's shared model storage: when a managed `XDG_CACHE_HOME` is set, Studio pins `HF_HOME`/`TORCH_HOME` to the shared cache so a rebuild flush cannot delete model files. TurboMind's file-based GEMM tuning record (`TM_GEMM_IMPORT`/`TM_GEMM_EXPORT`) is intentionally not managed: it is a single file with import/export state, not a cache directory.
 
 ### Parameter discovery
 
@@ -118,6 +139,14 @@ Switching the selected engine retains the other engine sections. The UI displays
 
 An explicit save records configuration review. A downloaded model with generated/default settings can require review before its configuration is treated as user-reviewed.
 
+### Reviewing changes before save
+
+**Review changes** compares the working form with the last saved configuration and groups the differences under routing/aliases, runtime/environment, and engine settings. Each row shows the saved value and the value that will replace it, plus an added/changed/removed marker. The dialog also reports alias validation failures and can save or discard the draft without leaving the page.
+
+Saving writes desired configuration only; it does not mutate a running engine process. The separate runtime plan explains whether a published revision or restart is still required.
+
+![Review changes dialog](screenshots/config-change-review.png)
+
 ### Parameters, defaults, and custom arguments
 
 Configuration forms use discovered types and controls. Search adds parameters to the editable set; saved overrides and common controls remain visible. Inline help states an engine default when known, while the information tooltip describes the field. Reset actions return an override to its saved or inherited value according to the control.
@@ -150,15 +179,18 @@ A process uses the environment and device allocation in its published launch rev
 
 Templates contain a name, description, selected engine, and engine-section snapshots. A template can capture all engine sections or only the active engine. Routing-name inclusion is an explicit option for `model_alias` and additional ordinary aliases.
 
-Applying a template supports these scopes:
+The **Templates** library is searchable and keeps the save form beside the saved-template list. Each template exposes its target engines, routing/request-alias badges, and its own actions. Applying a template supports these scopes:
 
-| API scope    | Behavior                                                                            |
-| ------------ | ----------------------------------------------------------------------------------- |
-| `active`     | Merge the template's active section into the target's active engine section.        |
-| `all`        | Merge each engine section present in the template into its matching target section. |
-| `set_engine` | Merge the template's active section and select that engine on the target.           |
+| API scope    | Behavior                                                                                                  |
+| ------------ | --------------------------------------------------------------------------------------------------------- |
+| `active`     | Merge the template's active section into the target's active engine section.                              |
+| `all`        | Merge each engine section present in the template into its matching target section.                       |
+| `set_engine` | Merge the template's active section and select that engine on the target.                                 |
+| `routing`    | Copy only `model_alias`, `swap_aliases`, and `set_params_by_id` into the target's active engine section.  |
 
-Request-preset configuration is part of the captured engine section. The template screen supports saving, selecting, renaming, describing, applying, and deleting templates. A template application can update the working form or persist configuration according to the requested action; runtime application remains a separate decision.
+Request-preset configuration is part of the captured engine section and is also included in the routing-only scope. **Apply settings** updates the working form; **Apply & save** persists immediately; **Routing only** changes aliases without touching engine parameters. Runtime application remains a separate decision.
+
+![Configuration templates library](screenshots/config-templates.png)
 
 ## Model identity and aliases
 
@@ -177,7 +209,9 @@ Studio normalizes primary and ordinary API names to safe lower-case names. Reque
 
 ### Request-parameter presets
 
-In **Model configuration → Launch → Request parameter aliases**, add a suffix and a JSON object. With primary API alias `assistant`, suffix `no-thinking` exposes `assistant:no-thinking`:
+In **Model configuration → Launch → Request parameter aliases**, add a suffix and one or more overrides. Each override chooses **Request** or **Chat template** scope, a value type (text, number, on/off, or JSON), and its value. The chat-template scope prepends `chat_template_kwargs.` automatically, so adding `enable_thinking` produces `chat_template_kwargs.enable_thinking`. The **Add chat template** preset creates that common thinking override in one step.
+
+With primary API alias `assistant`, suffix `no-thinking` exposes `assistant:no-thinking`. The corresponding stored value is:
 
 ```json
 {
@@ -195,7 +229,9 @@ A request to `assistant:no-thinking` resolves to the same real process as `assis
 
 Dotted keys address nested request fields; `chat_template_kwargs.enable_thinking` targets one member of `chat_template_kwargs`. A backslash escapes a literal dot in a key. A key ending in `?` applies only when that field is absent. A JSON object supplied as a field value replaces that field's value; dotted keys provide control over individual nested members. `false`, zero, empty strings, arrays, and nested JSON values retain their JSON types. Studio manages the `model` field.
 
-The editor validates JSON object shape, suffix syntax, and duplicate suffixes before save. Presets apply to subsequent JSON inference requests when saved and share the real model's running process. Parameter names and values must be supported by the target engine/model. Native engine-specific audio passthrough explicitly rejects parameter presets because it forwards the request through a concrete-model transport.
+The editor validates suffix syntax, duplicate suffixes, duplicate parameter names, the reserved `model` field, numeric input, and JSON values before save. Presets apply to subsequent JSON inference requests when saved and share the real model's running process. Parameter names and values must be supported by the target engine/model. Native engine-specific audio passthrough explicitly rejects parameter presets because it forwards the request through a concrete-model transport.
+
+![Structured request parameter aliases](screenshots/request-aliases.png)
 
 ### Live multi-target routing
 
@@ -271,6 +307,9 @@ Request details can include queue wait, model load time, first response byte, fi
 | `idle_ttl_seconds`            | `null`                                                | Positive values enable idle model unloading.                                                         |
 | `max_body_bytes`              | `null` in settings; effective 256 MiB runtime default | Buffered request-body bound.                                                                         |
 | `max_loaded_models`           | `null`                                                | Optional loaded-model count bound.                                                                   |
+| `vram_admission`              | `off`                                                 | GPU memory preflight: `off`, `warn`, or `enforce`.                                                   |
+| `vram_safety_margin_mib`      | `1024`                                                | Free memory kept per selected GPU during admission.                                                  |
+| `vram_estimates`              | `{}`                                                  | Per-model MiB overrides used when admission is warn/enforce.                                         |
 | `global_concurrency`          | `null`                                                | Optional global request bound; pool capacity also constrains forwarding.                             |
 | `per_model_concurrency`       | `null`                                                | Optional per-model request bound.                                                                    |
 | `queue_timeout_seconds`       | `30`                                                  | Maximum slot/queue wait.                                                                             |
@@ -290,6 +329,8 @@ Request details can include queue wait, model load time, first response byte, fi
 | `routing_aliases`             | `{}`                                                  | Live single-/multi-target routing aliases.                                                           |
 
 Serving limits and listener changes take effect through **Restart & apply**. Restart drains running engines and rebuilds the proxy runtime. Start and Stop control the listener; stop closes engine processes owned by that runtime. Model-specific unload, preload, warm, reload, and log actions are also available through the management API.
+
+GPU admission runs before a cold start when `vram_admission` is `warn` or `enforce`. It maps the launch's selected devices to the cached GPU inventory, subtracts the safety margin and any in-flight reservations, and compares free memory with the model estimate. Overrides are high confidence; a last uncontended ready-time observation is medium; a file-size weights-only bound is low and only warns because the engine may partially offload. Unknown estimates, CPU mode and probe failures admit with an explicit `unknown` decision rather than blocking. An enforceable shortfall returns HTTP 409 with code `INSUFFICIENT_VRAM` and a per-device detail payload; the Proxy page, running rows, activity events and `/api/proxy/vram` preserve the decision. This is a preflight, not a fitter: it does not choose context/layers, evict a loaded model, or account for memory used by other applications on the host. See [proxy operations](proxy-operations.md#gpu-admission) for the contract.
 
 ## Inference access keys and accounting
 
@@ -358,9 +399,21 @@ See [audio contract and discovery](audio-cpp-discovery.md) for the metadata and 
 
 The CUDA card displays detected versions/path and provides installation, version selection, refresh, and uninstall actions. Install/remove work reports through background activity. CUDA installations live in the persistent data directory, with the managed active path supplied to relevant builds/runtimes. An installed toolkit and a working host GPU driver/container runtime are separate requirements.
 
+### Storage
+
+**System → Storage** (`/system#storage`) reports filesystem use and a bounded inventory of the data root in seven disjoint categories: model payloads, Hugging Face cache, engine installs, CUDA toolkits, JIT/compile caches, history/logs/temp, and the accounting database. It identifies each category's cleanable units and blocked units (running model, retained launch reference, active download/build, symlink, or outside-root path) and links report-only categories to the workspace that owns their deletion.
+
+Cleanup is preview-then-apply. A preview returns a plan id, reclaimable bytes, affected units and a confirmation phrase; apply requires the same plan and an explicit confirmation, recomputes the plan digest, and refuses a stale plan, an oversized scope, or a concurrent cleanup. Studio only deletes its own unreferenced payload directories, orphan Hugging Face repos, managed JIT/build caches, the CUDA installer cache, and history entries beyond the keep count. Catalog models, engine installs, CUDA toolkits and the accounting database remain report-only; their existing surfaces own the guards and retirement decisions. Scans and deletion run on the blocking pool with entry/node caps, so a truncated reading is labelled a lower bound rather than presented as exact. See [storage governance](storage-governance.md).
+
 ### Diagnostics
 
 Diagnostics shows live-update connectivity, proxy health observation age, model-runtime observation, and persistence queue/failure state. The downloadable diagnostics bundle contains redacted service information for troubleshooting. It describes observation quality and persistence/operation health rather than treating missing observations as a stopped model.
+
+### Metrics and audit
+
+`GET /api/metrics` returns Prometheus text for external monitoring: application info and uptime, proxy request counters and gauges, loaded/starting/failed model counts, operation counts, persistence queue state, filesystem free space, and cached GPU free/total memory. Unknown observations are omitted rather than reported as zero; GPU values reflect the last cached inventory, and accounting/disk aggregates run on the blocking pool. Engine-native Prometheus endpoints remain engine-owned.
+
+Management mutations are recorded in a bounded JSONL audit log under the data directory (5 MiB active file, five rotations, mode 0600). Each record contains the time, a generated request id, method, query-free path, status, duration and actor kind (local, token, session, anonymous); request bodies, headers, cookies, query values and secrets are never logged. Audit writes are best effort and expose drop/failure counters through `/api/metrics`. See [observability](observability.md).
 
 ### Portable backup and restore
 
@@ -380,9 +433,9 @@ Private snapshots live in `config/history/`. Redaction in the displayed diff doe
 
 ## Local model benchmarks
 
-The benchmark management API runs a bounded streaming benchmark against a running compatible text model. This feature is available through the benchmark endpoints; the workspace screens provide model control and connection workflows. Requests contain a prompt of 1–1,000 characters and an output limit of 1–512 tokens (default 64). Results contain the model/proxy name, saved configuration revision/fingerprint, creation time, prompt, output preview, first-token time, duration, completion tokens when reported, throughput when available, and peak observed GPU memory.
+The benchmark management API runs a bounded streaming benchmark against a running compatible text model. This feature is available through the benchmark endpoints; the workspace screens provide model control and connection workflows. Requests contain a prompt of 1–1,000 characters, an output limit of 1–512 tokens (default 64), an optional warmup count (0–3), and an optional repeat count (1–5). Results contain the model/proxy name, saved configuration revision/fingerprint, creation time, prompt, output preview, first-token time, duration, completion tokens when reported, throughput when available, and peak observed GPU memory. Repeats add per-run timings plus min/p50/p95/max aggregates; the original top-level fields continue to describe the first measured run, and legacy stored rows read back with defaults.
 
-The API stores results in `benchmarks.yaml`; listing defaults to 20 entries and supports up to 100. GPU memory is a sampled observation and can include other GPU activity. Results describe their recorded model/configuration and machine; they are not automatically normalized across hardware or engine builds.
+The API stores results in `benchmarks.yaml`; listing defaults to 20 entries and supports up to 100. GPU memory is a sampled observation and can include other GPU activity. Results describe their recorded model/configuration and machine; they are not normalized across hardware, quantization, context or engine flags, and a small p50/p95 sample is indicative rather than a calibrated benchmark.
 
 ## Persistence, activities, and recovery
 

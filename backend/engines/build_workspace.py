@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import shutil
 import subprocess
 import time
@@ -74,18 +75,70 @@ def ccache_dir() -> str:
     return os.path.join(studio_data_dir(), "ccache")
 
 
+def _host_build_identity() -> Dict[str, str]:
+    """Identify the host toolchain a workspace's CMake cache was generated for.
+
+    A workspace can outlive the image it was created in (``data`` is a volume).
+    Reusing it after an OS or compiler upgrade keeps stale absolute paths in
+    CMakeCache, for example a linker dependency on the old image's
+    ``/usr/lib/gcc/.../13/libgomp.so``. Including this identity in
+    :func:`workspace_key` gives the new environment a fresh build directory
+    instead of reusing a cache it cannot satisfy.
+    """
+    release = ""
+    try:
+        with open("/etc/os-release", "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.startswith(("ID=", "VERSION_ID=")):
+                    release += line.strip() + ";"
+    except OSError:
+        release = f"{platform.system()}-{platform.release()};"
+    compiler = (
+        os.environ.get("CXX")
+        or shutil.which("g++")
+        or shutil.which("c++")
+        or shutil.which("cl")
+        or ""
+    )
+    version = ""
+    if compiler and not compiler.lower().endswith("cl.exe"):
+        try:
+            proc = subprocess.run(
+                [compiler, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            version = (proc.stdout or proc.stderr or "").splitlines()[0].strip()
+        except (OSError, subprocess.SubprocessError, IndexError):
+            version = ""
+    return {
+        "release": release,
+        "arch": platform.machine(),
+        "compiler": compiler,
+        "compiler_version": version,
+    }
+
+
 def workspace_key(
     engine: str,
     repo_url: str,
     config: Optional[dict] = None,
     patches: Optional[Sequence[str]] = None,
 ) -> str:
-    """Stable id for one engine, repository, build configuration, and patch set."""
+    """Stable id for one engine, repository, build configuration, and patch set.
+
+    The host build identity is part of the key on purpose: build directories
+    live on the persistent data volume, so an image/toolchain upgrade must not
+    reuse a CMake cache that points at paths from the previous image.
+    """
     payload = {
         "engine": str(engine or "").strip(),
         "repo": str(repo_url or "").strip(),
         "config": config or {},
         "patches": [str(item) for item in (patches or [])],
+        "host": _host_build_identity(),
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
@@ -333,9 +386,7 @@ def _set_rpath(binary: str, value: str) -> None:
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
-        raise WorkspaceIsolationError(
-            f"Could not rewrite the library path of {binary}: {detail}"
-        )
+        raise WorkspaceIsolationError(f"Could not rewrite the library path of {binary}: {detail}")
 
 
 def _resolve_rpath_entry(binary: str, entry: str) -> str:
@@ -437,9 +488,7 @@ def assert_dynamic_libs_resolve(
     if "not a dynamic executable" in text:
         return
     if proc.returncode != 0 and "not found" not in text:
-        raise WorkspaceIsolationError(
-            f"Could not inspect libraries for {binary}: {text.strip()}"
-        )
+        raise WorkspaceIsolationError(f"Could not inspect libraries for {binary}: {text.strip()}")
     for line in proc.stdout.splitlines():
         if "=>" not in line:
             continue
@@ -650,7 +699,9 @@ class BuildWorkspace:
         previous = self.read_state()
         self.note(
             "locked",
-            recovered_from=previous.get("phase") if previous.get("phase") not in {"ready", "idle", ""} else "",
+            recovered_from=previous.get("phase")
+            if previous.get("phase") not in {"ready", "idle", ""}
+            else "",
         )
 
     def _steal_or_reject(self) -> None:
@@ -721,7 +772,11 @@ class BuildWorkspace:
         self.note("syncing", repo_url=repo_url, ref=ref)
         os.makedirs(self.path, exist_ok=True)
         git_dir = os.path.join(self.checkout_dir, ".git")
-        if os.path.isdir(self.checkout_dir) and not os.path.isdir(git_dir) and not os.path.isfile(git_dir):
+        if (
+            os.path.isdir(self.checkout_dir)
+            and not os.path.isdir(git_dir)
+            and not os.path.isfile(git_dir)
+        ):
             abandoned = self.checkout_dir + ".abandoned-" + str(int(time.time()))
             os.rename(self.checkout_dir, abandoned)
             logger.warning("Moved an incomplete workspace checkout aside to %s", abandoned)
@@ -737,7 +792,9 @@ class BuildWorkspace:
         if fetch.returncode != 0 and ref == "master":
             fetch = _git(["fetch", "--prune", "origin", "main"], cwd=self.checkout_dir, check=False)
         if fetch.returncode != 0:
-            fetch_all = _git(["fetch", "--prune", "--tags", "origin"], cwd=self.checkout_dir, check=False)
+            fetch_all = _git(
+                ["fetch", "--prune", "--tags", "origin"], cwd=self.checkout_dir, check=False
+            )
             if fetch_all.returncode != 0:
                 detail = (fetch.stderr or fetch.stdout or fetch_all.stderr or "").strip()
                 raise WorkspaceGitError(f"git fetch failed: {detail or 'unknown error'}")
@@ -855,7 +912,9 @@ class BuildWorkspace:
         published = self.publish_tree(
             self.checkout_dir,
             snapshot_dir,
-            required_relative=[".git"] if os.path.exists(os.path.join(self.checkout_dir, ".git")) else [],
+            required_relative=[".git"]
+            if os.path.exists(os.path.join(self.checkout_dir, ".git"))
+            else [],
         )
         site = site_packages_dir(venv_path)
         try:
@@ -982,14 +1041,10 @@ def _repair_published_binaries(root: str, forbidden_root: str) -> None:
                 lib_dirs = _snapshot_library_dirs(root)
             repair_workspace_rpath(path, forbidden_root)
             try:
-                assert_dynamic_libs_resolve(
-                    path, forbidden_root, root, lib_dirs=lib_dirs
-                )
+                assert_dynamic_libs_resolve(path, forbidden_root, root, lib_dirs=lib_dirs)
             except WorkspaceIsolationError:
                 _ensure_origin_rpath(path)
-                assert_dynamic_libs_resolve(
-                    path, forbidden_root, root, lib_dirs=lib_dirs
-                )
+                assert_dynamic_libs_resolve(path, forbidden_root, root, lib_dirs=lib_dirs)
 
 
 def _clean_excludes() -> List[str]:
@@ -1008,7 +1063,9 @@ def _validate_ref(ref: str) -> str:
     return text
 
 
-def _git(args: Sequence[str], *, cwd: Optional[str] = None, check: bool = True) -> subprocess.CompletedProcess:
+def _git(
+    args: Sequence[str], *, cwd: Optional[str] = None, check: bool = True
+) -> subprocess.CompletedProcess:
     proc = subprocess.run(
         git_argv(*args),
         cwd=cwd,
@@ -1030,7 +1087,7 @@ def _git_output(args: Sequence[str], *, cwd: Optional[str] = None) -> str:
 def _library_exists_under(root: str, basename: str) -> bool:
     if not root or not os.path.isdir(root) or not basename:
         return False
-    for dirpath, _, filenames in os.walk(root):
+    for _dirpath, _, filenames in os.walk(root):
         if basename in filenames:
             return True
     return False

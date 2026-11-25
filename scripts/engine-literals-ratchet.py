@@ -43,10 +43,23 @@ AREA_CAPS: Dict[str, int] = {
     # for the native family instead of six id tuples.
     # LMDeploy conversion tightened 152 -> 151: its compatibility module now
     # supplies only the URL prefix through the definition-derived router.
-    "backend/routes/": 91,
+    # 2026-11-21: 91 -> 90. Audio version-row serialization moved to
+    # routes/audio_cpp_versions.py, which takes the engine id as a parameter.
+    "backend/routes/": 90,
     "backend/services/": 7,
-    "frontend/e2e/": 22,
-    "frontend/src/components/": 72,
+    "frontend/e2e/": 21,
+    # 2026-11-15: new test-only contract fixtures reference three engine ids
+    # in UI shape descriptors; no production dispatch was added.
+    "frontend/src/api/": 3,
+    # 2026-11-15: 72 -> 73. The extracted launch-settings test pins one
+    # engine id; the view itself shed the same literals.
+    # 2026-11-15: 73 -> 69. Extracting FirstModelPanel moved the first-run
+    # empty state out of ModelLibrary and removed four engine-ID literal sites.
+    "frontend/src/components/": 68,
+    # 2026-11-15: 58 -> 59. Prettier split one line in
+    # engineReadiness.test.js, putting a second id literal on its own line.
+    # 2026-11-21: 59 -> 58. The audio workspace/contract composables now derive
+    # the audio engine id from engines/registry.js instead of restating it.
     "frontend/src/composables/": 58,
     # R95 raised this 42 -> 44: the frontend descriptors now declare the
     # build-options catalog endpoint (one per catalog-bearing engine) instead of
@@ -60,8 +73,13 @@ AREA_CAPS: Dict[str, int] = {
     # 2026-11-11: 68 -> 69. The third SM70 fork joined as one descriptor reusing
     # the SM70 panel variant — one identity site; its versionsKey/managerKey
     # derive from the id.
-    "frontend/src/engines/": 69,
-    "frontend/src/stores/": 323,
+    "frontend/src/engines/": 68,
+    # 2026-11-15: 323 -> 325. CUDA activation adds one reviewed API endpoint
+    # call site in engines.js; the ratchet's token set matches the shared
+    # versions URL prefix for two engine ids.
+    # 2026-11-15: 325 -> 327. Installer-cache cleanup adds one more reviewed
+    # versions-URL call site in engines.js (counted for both engine ids).
+    "frontend/src/stores/": 327,
     "frontend/src/test-fixtures/": 43,
     # R90 raised this 6 -> 7: the audio-package predicate now lives once in
     # frontend/src/utils/audioModel.js (four duplicated checks across views and
@@ -73,11 +91,18 @@ AREA_CAPS: Dict[str, int] = {
     # R104 tightened this 376 -> 351: R90/R91/R101 moved the audio/text family
     # dispatch into descriptor data and the R88 stub fix removed dead reads, so
     # the measured total dropped; the cap now has NO slack.
-    "frontend/src/views/": 265,
+    # 2026-11-15: 265 -> 266. Prettier split one line in ModelConfig.test.js,
+    # putting a second id literal on its own line.
+    # 2026-11-21: 261 -> 237. The audio workspace/tests import the registry's
+    # audio engine id and contract path/schema constants instead of restating
+    # them (24 literal sites removed, no UI control flow added).
+    "frontend/src/views/": 237,
     # Every engine conversion tightened this as recipes/constants moved out of
     # the exporter into authoritative definitions; deleting the exporter after
     # the final conversion took it to 40.
-    "scripts/": 40,
+    # The build-default exporter now reads both catalogs through
+    # backend/engines/build_defaults.py, so its own engine-id literal is gone: 40 -> 39.
+    "scripts/": 39,
 }
 
 

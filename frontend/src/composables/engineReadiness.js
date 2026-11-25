@@ -3,7 +3,18 @@
  * Installed-but-not-runnable builds stay out of the ready set.
  */
 
-const AUDIO_TASKS = new Set(['vad', 'asr', 'diar', 'sep', 'gen', 'tts', 'clon', 'vc', 's2s', 'align'])
+const AUDIO_TASKS = new Set([
+  'vad',
+  'asr',
+  'diar',
+  'sep',
+  'gen',
+  'tts',
+  'clon',
+  'vc',
+  's2s',
+  'align',
+])
 
 export function engineCardOrder(descriptor) {
   if (descriptor?.runnable) return 0
@@ -31,7 +42,8 @@ export function engineMatchesFilters(descriptor, { task = 'all', hardware = 'all
   } else if (task === 'embeddings') {
     if (!descriptor.supports_embeddings && !tasks.has('embeddings')) return false
   } else if (task === 'text') {
-    if (tasks.size && !tasks.has('text-generation') && !tasks.has('text2text-generation')) return false
+    if (tasks.size && !tasks.has('text-generation') && !tasks.has('text2text-generation'))
+      return false
   }
   if (hardware === 'cpu') {
     if (!formats.has('gguf') && !descriptor.cpu_supported) return false
@@ -47,4 +59,31 @@ export function runnableEngineIds(descriptors) {
   return (descriptors || [])
     .filter((descriptor) => descriptor && descriptor.enabled !== false && descriptor.runnable)
     .map((descriptor) => descriptor.id)
+}
+
+function descriptorNames(descriptors) {
+  return descriptors.map((descriptor) => descriptor.label || descriptor.id).filter(Boolean)
+}
+
+/**
+ * First-run engine state for the setup guide.
+ *
+ * `missing` means nothing usable is installed, `inactive` means there are
+ * installed versions but none is the active runnable build, and `ready` means
+ * at least one enabled engine can launch a model. Feature-disabled engines do
+ * not count as installed because activating them cannot make them runnable.
+ */
+export function engineSetupState(descriptors) {
+  const enabled = (descriptors || []).filter(
+    (descriptor) => descriptor && descriptor.enabled !== false,
+  )
+  const ready = enabled.filter((descriptor) => descriptor.runnable)
+  if (ready.length) return { key: 'ready', names: descriptorNames(ready) }
+
+  const installed = enabled.filter(
+    (descriptor) => Number(descriptor.installed_versions) > 0 || Boolean(descriptor.active_version),
+  )
+  if (installed.length) return { key: 'inactive', names: descriptorNames(installed) }
+
+  return { key: 'missing', names: [] }
 }

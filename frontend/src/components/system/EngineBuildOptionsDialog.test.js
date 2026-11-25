@@ -151,10 +151,33 @@ function mountDialog(props = {}) {
           template:
             '<input class="toggle-stub" type="checkbox" :checked="modelValue" :disabled="disabled" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
         },
+        ProgressSpinner: true,
       },
     },
   })
 }
+
+describe('EngineBuildOptionsDialog toolkit binding', () => {
+  it('binds an installed CUDA toolkit to the engine build', async () => {
+    const wrapper = mountDialog({
+      showToolkit: true,
+      toolkitOptions: [
+        { label: 'Active Studio toolkit', value: '' },
+        { label: 'CUDA 12.9', value: '12.9' },
+      ],
+    })
+
+    const select = wrapper.get('[data-toolkit-select]')
+    expect(select.text()).toContain('CUDA 12.9')
+    await select.setValue('12.9')
+    expect(wrapper.emitted('option')).toContainEqual(['cuda_toolkit', '12.9'])
+  })
+
+  it('hides the toolkit binding for engines that do not expose it', () => {
+    const wrapper = mountDialog()
+    expect(wrapper.find('[data-toolkit-select]').exists()).toBe(false)
+  })
+})
 
 describe('EngineBuildOptionsDialog schema rendering', () => {
   it('renders form fields, build type, categories and custom flags from props', () => {
@@ -185,7 +208,7 @@ describe('EngineBuildOptionsDialog schema rendering', () => {
   it('splits primary backends from the More backends details and honours disabled state', () => {
     const wrapper = mountDialog()
     const grid = wrapper
-      .findAll('.form-field')
+      .findAll('.page-form__field')
       .find((node) => node.text().includes('GPU & compute backends'))
     const primaryToggles = grid.findAll('.toggle-grid')[0].findAll('.toggle-stub')
     expect(primaryToggles).toHaveLength(1)
@@ -232,12 +255,12 @@ describe('EngineBuildOptionsDialog schema rendering', () => {
         { text: 'CUDA: available.', tone: 'info', role: 'status' },
       ],
     })
-    const notes = wrapper.findAll('.build-note')
+    const notes = wrapper.findAll('.build-settings-note')
     expect(notes[0].text()).toBe('Could not check CUDA.')
-    expect(notes[0].classes()).not.toContain('build-note--info')
-    expect(notes[0].attributes('role')).toBe('status')
+    expect(notes[0].classes()).toContain('state-banner--warning')
     expect(notes[1].text()).toBe('CUDA: available.')
-    expect(notes[1].classes()).toContain('build-note--info')
+    expect(notes[1].classes()).toContain('state-banner--info')
+    expect(notes[1].attributes('role')).toBe('status')
   })
 
   it('shows the loading note while the catalog is being fetched', () => {

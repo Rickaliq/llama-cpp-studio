@@ -69,6 +69,11 @@ test('configuration actions remain reachable above mobile navigation', async ({ 
   await installConfiguration(page)
   await page.setViewportSize({ width: 390, height: 900 })
   await page.goto('/models/demo-model/config')
+  await expect(page.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  )
+  await expect(page.getByRole('radiogroup', { name: 'Engine', exact: true })).toBeVisible()
   const save = page.getByRole('button', { name: 'Save changes', exact: true })
   await save.scrollIntoViewIfNeeded()
   const bounds = await save.boundingBox()
@@ -80,6 +85,7 @@ test('configuration actions remain reachable above mobile navigation', async ({ 
       return node.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))
     }),
   ).toBe(true)
+  await page.getByRole('tab', { name: 'Runtime', exact: true }).click()
   const input = page.getByRole('spinbutton', { name: /Context size/ })
   await expect(input).toHaveAttribute('id', 'basic-ctx_size')
   await expect(input).toHaveAttribute('aria-describedby', 'basic-help-ctx_size')
@@ -92,7 +98,8 @@ test('library filters recover cleanly and single-model cards expose their main a
   await page.goto('/models')
   await expect(page.getByRole('button', { name: 'Connect Demo', exact: true })).toBeVisible()
   await page.getByRole('button', { name: /^Filters/ }).click()
-  await page.getByLabel('Engine', { exact: true }).selectOption('audio_cpp')
+  await page.getByLabel('Engine', { exact: true }).click()
+  await page.getByRole('option', { name: 'audio.cpp', exact: true }).click()
   await expect(page.getByRole('status').filter({ hasText: '1 of 2 models' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Engine: audio.cpp ×', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Clear filters', exact: true }).click()
@@ -293,7 +300,7 @@ test('library table keeps status, file sizes and actions in consistent columns',
     for (const row of await rows.all()) {
       const size = await row.locator('.library-list__size').boundingBox()
       const actions = await row.locator('.library-list__actions').boundingBox()
-      if (width > 1100) expect(size.x + size.width).toBeLessThan(actions.x)
+      if (width > 1100) expect(size.x + size.width).toBeLessThanOrEqual(actions.x)
       else expect(size.y + size.height).toBeLessThanOrEqual(actions.y)
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(

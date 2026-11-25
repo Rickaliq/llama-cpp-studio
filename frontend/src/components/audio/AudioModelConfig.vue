@@ -1,14 +1,9 @@
 <template>
   <div class="audio-model-config">
-    <Message
-      v-if="paramRegistry.scan_error"
-      severity="warn"
-      :closable="false"
-      class="config-scan-message"
-    >
-      <div class="config-message__body">
-        <strong>Engine options could not be loaded.</strong>
-        {{ paramRegistry.scan_error }}
+    <StateBanner v-if="paramRegistry.scan_error" severity="warning" class="config-scan-message">
+      <strong>Engine options could not be loaded.</strong>
+      {{ paramRegistry.scan_error }}
+      <template #actions>
         <Button
           label="Refresh engine options"
           icon="pi pi-refresh"
@@ -16,20 +11,14 @@
           severity="secondary"
           outlined
           :loading="rescanLoading"
-          class="config-message__action"
           @click="rescanCliParams"
         />
-      </div>
-    </Message>
-    <Message
-      v-else-if="paramRegistry.scan_pending"
-      severity="info"
-      :closable="false"
-      class="config-scan-message"
-    >
-      <div class="config-message__body">
-        <strong>Engine options are not indexed yet.</strong>
-        Activate audio.cpp on the Engines page, then refresh.
+      </template>
+    </StateBanner>
+    <StateBanner v-else-if="paramRegistry.scan_pending" severity="info" class="config-scan-message">
+      <strong>Engine options are not indexed yet.</strong>
+      Activate audio.cpp on the Engines page, then refresh.
+      <template #actions>
         <Button
           label="Refresh now"
           icon="pi pi-refresh"
@@ -37,64 +26,35 @@
           severity="secondary"
           outlined
           :loading="rescanLoading"
-          class="config-message__action"
           @click="rescanCliParams"
         />
-      </div>
-    </Message>
+      </template>
+    </StateBanner>
 
-    <Message
-      v-if="contractUnavailable"
-      severity="error"
-      :closable="false"
-      class="config-scan-message"
-    >
-      <div class="config-message__body">
-        <strong>audio.cpp build is too old for Studio.</strong>
-        Studio requires v0.9.1 or newer (JSON loader listing). Update audio.cpp on the Engines page
-        to configure and run audio models. ({{ audioContractError }})
-      </div>
-    </Message>
+    <AudioContractNotice
+      :scan-error="paramRegistry.scan_error"
+      :scan-pending="paramRegistry.scan_pending"
+    />
 
-    <Message
+    <StateBanner
       v-for="(warning, index) in contractDriftWarnings"
       :key="`contract-drift-${index}`"
-      severity="warn"
-      :closable="false"
+      severity="warning"
+      icon=""
       class="config-scan-message"
     >
-      <div class="config-message__body">
-        <strong>Engine contract drift.</strong>
-        {{ warning }}
-      </div>
-    </Message>
+      <strong>Engine contract drift.</strong>
+      {{ warning }}
+    </StateBanner>
 
-    <div
+    <SectionTabs
       v-if="!hideTabs"
-      class="config-section-tabs"
-      role="tablist"
+      v-model="internalTab"
+      :items="tabs"
+      id-prefix="audio-config"
+      variant="pills"
       aria-label="Audio configuration sections"
-    >
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        type="button"
-        :id="`audio-config-tab-${tab.id}`"
-        role="tab"
-        class="config-section-tab"
-        :class="{ selected: currentTab === tab.id }"
-        :aria-selected="currentTab === tab.id"
-        :aria-controls="`audio-config-panel-${tab.id}`"
-        :tabindex="currentTab === tab.id ? 0 : -1"
-        @click="internalTab = tab.id"
-        @keydown="onRovingTabKeydown"
-      >
-        <span class="engine-option-label">
-          <i :class="tab.icon" aria-hidden="true" />
-          <span>{{ tab.label }}</span>
-        </span>
-      </button>
-    </div>
+    />
 
     <!-- Server -->
     <div
@@ -107,7 +67,7 @@
     >
       <div class="config-card">
         <div class="runtime-common-head">
-          <div class="section-label section-label--inline">Common settings</div>
+          <h3 class="page-subheading">Common settings</h3>
           <div class="toggle-field runtime-advanced-toggle">
             <ToggleSwitch v-model="showAdvancedRuntime" input-id="audio-runtime-advanced" />
             <label for="audio-runtime-advanced">Advanced</label>
@@ -167,14 +127,9 @@
             >
           </div>
         </div>
-        <Message
-          v-else
-          severity="secondary"
-          :closable="false"
-          class="config-scan-message runtime-empty-message"
-        >
+        <StateBanner v-else severity="info" icon="" class="runtime-empty-message">
           No common runtime settings were found in the current audio.cpp parameter index.
-        </Message>
+        </StateBanner>
 
         <template v-if="showAdvancedRuntime">
           <div class="audio-advanced">
@@ -205,7 +160,7 @@
             </div>
 
             <div v-if="serverSearchQuery.trim()" class="param-tag-cloud-wrap">
-              <div class="section-label">Add parameter</div>
+              <h3 class="page-subheading">Add parameter</h3>
               <div v-if="advancedSearchTagResults.length" class="param-tag-cloud" role="list">
                 <button
                   v-for="param in advancedSearchTagResults"
@@ -219,20 +174,13 @@
                   <code class="param-search-tag__key">{{ param.key }}</code>
                 </button>
               </div>
-              <Message v-else severity="secondary" :closable="false" class="config-scan-message">
-                No parameters match.
-              </Message>
+              <StateBanner v-else severity="info" icon="">No parameters match.</StateBanner>
             </div>
 
-            <div class="section-label">Parameters</div>
-            <Message
-              v-if="!advancedPaneParams.length"
-              severity="secondary"
-              :closable="false"
-              class="config-scan-message"
-            >
+            <h3 class="page-subheading">Parameters</h3>
+            <StateBanner v-if="!advancedPaneParams.length" severity="info" icon="">
               Search above to add advanced options. Saved values appear here automatically.
-            </Message>
+            </StateBanner>
             <div v-else class="params-grid section-params">
               <div
                 v-for="param in advancedPaneParams"
@@ -311,7 +259,7 @@
     >
       <div class="config-card">
         <div class="tts-subsection__head">
-          <div class="section-label section-label--inline">Community preset voices</div>
+          <h3 class="page-subheading">Community preset voices</h3>
           <Button
             :label="
               communityVoicesInstalled ? 'Re-download preset voices' : 'Download preset voices'
@@ -362,7 +310,7 @@
 
       <div class="config-card">
         <div class="tts-subsection__head">
-          <div class="section-label section-label--inline">Reference audio</div>
+          <h3 class="page-subheading">Reference audio</h3>
           <div class="reference-audio-actions">
             <input
               ref="referenceUploadInput"
@@ -443,7 +391,7 @@
 
       <div v-if="supportsVoicePresets" class="config-card">
         <div class="tts-subsection__head">
-          <div class="section-label section-label--inline">Voice presets</div>
+          <h3 class="page-subheading">Voice presets</h3>
           <Button
             label="Add preset"
             icon="pi pi-plus"
@@ -559,225 +507,47 @@
       tabindex="0"
       class="config-tab-panel"
     >
-      <div class="config-card">
-        <div class="section-label section-label--inline">
-          {{ requestDefaultsSectionTitle }}
-          <small class="section-hint"
-            ><code>{{ apiEndpoint }}</code></small
-          >
-        </div>
-
-        <Message
-          v-if="instructionsPolicyGuidance"
-          severity="info"
-          :closable="false"
-          class="config-scan-message"
-        >
-          {{ instructionsPolicyGuidance }}
-        </Message>
-
-        <div v-if="swapSetParamsPreview" class="setparams-preview">
-          <button
-            type="button"
-            class="setparams-preview__label setparams-preview__toggle"
-            :aria-expanded="showSetParamsPreview"
-            @click="showSetParamsPreview = !showSetParamsPreview"
-          >
-            <span>Saved request defaults preview</span>
-            <i
-              class="pi"
-              :class="showSetParamsPreview ? 'pi-chevron-up' : 'pi-chevron-down'"
-              aria-hidden="true"
-            />
-          </button>
-          <pre v-if="showSetParamsPreview" class="setparams-preview__code">{{
-            JSON.stringify(swapSetParamsPreview, null, 2)
-          }}</pre>
-        </div>
-
-        <template v-if="isProfiledAudioModel">
-          <div v-if="requestFieldGroups.length" class="tts-subsection">
-            <div v-for="group in requestFieldGroups" :key="group.id" class="tts-speech-group">
-              <div v-if="requestFieldGroups.length > 1" class="tts-speech-group__label">
-                {{ group.label }}
-              </div>
-              <div class="params-grid section-params">
-                <div
-                  v-for="field in group.fields"
-                  :key="`${group.id}-${field.key}`"
-                  class="param-field"
-                >
-                  <label class="param-field__label">
-                    {{ field.label }}
-                    <i
-                      v-if="field.description || field.hint"
-                      class="pi pi-info-circle param-info"
-                      v-tooltip.top="requestDefaultFieldTooltip(field)"
-                      tabindex="0"
-                      aria-label="About request default field"
-                    />
-                  </label>
-                  <ToggleSwitch
-                    v-if="field.type === 'bool'"
-                    :model-value="Boolean(requestDefaultValue(field))"
-                    @update:model-value="(value) => setRequestDefaultValue(field, value)"
-                  />
-                  <InputNumber
-                    v-else-if="field.type === 'int' || field.type === 'float'"
-                    :model-value="requestDefaultValue(field)"
-                    :minFractionDigits="field.type === 'float' ? 1 : 0"
-                    :maxFractionDigits="field.type === 'float' ? 6 : 0"
-                    :min="field.minimum"
-                    :max="field.maximum"
-                    class="param-input"
-                    @update:model-value="(value) => setRequestDefaultValue(field, value)"
-                  />
-                  <Textarea
-                    v-else-if="field.type === 'textarea'"
-                    :model-value="requestDefaultValue(field) || ''"
-                    :placeholder="field.placeholder || ''"
-                    rows="2"
-                    class="w-full textarea-cli param-input"
-                    @update:model-value="(value) => setRequestDefaultValue(field, value)"
-                  />
-                  <Select
-                    v-else-if="fieldSelectOptions(field).length"
-                    :model-value="requestDefaultValue(field) || ''"
-                    :options="fieldSelectOptions(field)"
-                    optionLabel="label"
-                    optionValue="value"
-                    :placeholder="field.placeholder || 'Choose a value'"
-                    showClear
-                    editable
-                    class="param-input"
-                    @update:model-value="(value) => setRequestDefaultValue(field, value)"
-                  />
-                  <InputText
-                    v-else
-                    :model-value="requestDefaultValue(field) || ''"
-                    :placeholder="field.placeholder || ''"
-                    class="param-input"
-                    @update:model-value="(value) => setRequestDefaultValue(field, value)"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-        </template>
-
-        <Message v-else severity="secondary" :closable="false" class="config-scan-message">
-          No request defaults profile is available for this audio model.
-        </Message>
-      </div>
-
-      <details class="config-card config-details-block">
-        <summary class="config-details-summary">API example</summary>
-        <div class="config-details-body">
-          <div class="tts-subsection__head">
-            <p class="config-muted-hint">
-              Model id:
-              <code>{{ config.model_alias || stableModelId || 'your-model-id' }}</code>
-            </p>
-            <Button
-              label="Copy curl"
-              icon="pi pi-copy"
-              size="small"
-              severity="secondary"
-              outlined
-              type="button"
-              @click="copyApiExample"
-            />
-          </div>
-          <Textarea
-            :model-value="requestApiExample"
-            readonly
-            rows="10"
-            class="w-full textarea-cli cmd-preview-textarea"
-            autoResize
-          />
-        </div>
-      </details>
-
-      <details v-if="audioRequestCapabilities.length" class="config-card config-details-block">
-        <summary class="config-details-summary">
-          Request-only parameters
-          <span class="config-details-summary__count">{{ audioRequestCapabilities.length }}</span>
-        </summary>
-        <div class="config-details-body">
-          <p class="config-muted-hint">
-            Available on requests, not as startup settings. Prefer Defaults above when a matching
-            field exists.
-          </p>
-          <div class="config-toolbar__row">
-            <span class="p-input-icon-left config-search-wrap">
-              <i class="pi pi-search" aria-hidden="true" />
-              <InputText
-                v-model="referenceSearchQuery"
-                type="search"
-                placeholder="Filter…"
-                class="config-search-input"
-                aria-label="Filter request parameters"
-              />
-            </span>
-          </div>
-          <div class="request-cap-grid" role="list">
-            <div
-              v-for="param in filteredRequestCapabilities"
-              :key="`request-${param.key}`"
-              class="request-cap-item"
-              role="listitem"
-            >
-              <code class="request-cap-item__key">{{ param.key }}</code>
-              <span class="request-cap-item__label">{{ param.label }}</span>
-              <i
-                v-if="param.description"
-                class="pi pi-info-circle param-info request-cap-item__info"
-                v-tooltip.top="paramDescriptionTooltip(param)"
-              />
-            </div>
-          </div>
-          <Message
-            v-if="!filteredRequestCapabilities.length"
-            severity="secondary"
-            :closable="false"
-            class="config-scan-message"
-          >
-            No request parameters match your filter.
-          </Message>
-        </div>
-      </details>
+      <ModelConfigAudioProfiles
+        :title="requestDefaultsSectionTitle"
+        :endpoint="apiEndpoint"
+        :guidance="instructionsPolicyGuidance"
+        :profiled="isProfiledAudioModel"
+        :groups="requestFieldGroups"
+        :resolve-value="requestDefaultValue"
+        :resolve-options="fieldSelectOptions"
+        :defaults-preview="swapSetParamsPreview"
+        :api-example="requestApiExample"
+        :model-id="config.model_alias || stableModelId || 'your-model-id'"
+        :capabilities="audioRequestCapabilities"
+        @update-request-default="applyProfileDefault"
+      />
     </div>
   </div>
 </template>
 
 <script setup>
-import { copyText } from '@/utils/clipboard'
 import { computed, onMounted, ref, watch, onUnmounted } from 'vue'
-import { onRovingTabKeydown } from '@/composables/useRovingTabs'
 import { useToast } from 'primevue/usetoast'
 import { useConfirm } from 'primevue/useconfirm'
 import { requireSingleConfirmation } from '@/composables/singleConfirm'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import InputText from 'primevue/inputtext'
-import InputNumber from 'primevue/inputnumber'
 import ToggleSwitch from 'primevue/toggleswitch'
 import Select from 'primevue/select'
-import Message from 'primevue/message'
 import Textarea from 'primevue/textarea'
+import SectionTabs from '@/components/common/SectionTabs.vue'
+import StateBanner from '@/components/common/StateBanner.vue'
 import AudioParamField from '@/components/audio/AudioParamField.vue'
+import AudioContractNotice from '@/components/audio/AudioContractNotice.vue'
+import ModelConfigAudioProfiles from '@/components/models/ModelConfigAudioProfiles.vue'
 import {
   useAudioModelConfig,
   paramDescriptionTooltip,
   dependencyFieldTags,
   paramMatchesSearch,
 } from '@/composables/useAudioModelConfig'
-import {
-  audioContract,
-  audioContractError,
-  audioContractLoaded,
-  fetchAudioContract,
-} from '@/composables/useAudioContract'
+import { fetchAudioContract } from '@/composables/useAudioContract'
 import { useEnginesStore } from '@/stores/engines'
 import { isAudioEngineId } from '@/engines/registry'
 import { useModelStore } from '@/stores/models'
@@ -821,10 +591,8 @@ const currentTab = computed(() =>
   props.hideTabs && props.activeTab ? props.activeTab : internalTab.value,
 )
 const serverSearchQuery = ref('')
-const referenceSearchQuery = ref('')
 const hideUnsupportedParams = ref(true)
 const showAdvancedRuntime = ref(false)
-const showSetParamsPreview = ref(false)
 const rescanLoading = ref(false)
 const referenceAudioItems = ref([])
 const referenceAudioLoading = ref(false)
@@ -876,17 +644,6 @@ const contractDriftWarnings = computed(() =>
   (props.paramRegistry?.contract_drift_warnings || []).map(String),
 )
 
-// No composed contract means the active build predates JSON probes (or no
-// audio.cpp version is active). Forms must not render degraded — prompt update.
-const contractUnavailable = computed(() => {
-  if (props.paramRegistry?.scan_error || props.paramRegistry?.scan_pending) return false
-  return Boolean(
-    audioContractError.value &&
-    !audioContractLoaded.value &&
-    !audioContract.value.operations?.length,
-  )
-})
-
 const {
   audioConfigGroups,
   audioRequestCapabilities,
@@ -920,6 +677,10 @@ const {
   setVoicePresetField,
   setDefaultVoicePresetSelection,
 } = audio
+
+function applyProfileDefault({ field, value }) {
+  setRequestDefaultValue(field, value)
+}
 
 const tabs = computed(() => [
   { id: 'server', label: 'Runtime', icon: 'pi pi-server' },
@@ -1325,21 +1086,6 @@ function removeAdvancedParam(param) {
   setAudioParamValue(param, null)
 }
 
-const filteredRequestCapabilities = computed(() => {
-  const q = referenceSearchQuery.value.trim().toLowerCase()
-  if (!q) return audioRequestCapabilities.value
-  return audioRequestCapabilities.value.filter((param) => {
-    const hay = [param.key, param.label, param.description].join(' ').toLowerCase()
-    return hay.includes(q)
-  })
-})
-
-function requestDefaultFieldTooltip(field) {
-  const modelHints = [field?.description, field?.hint].filter(Boolean)
-  if (modelHints.length) return modelHints.join('\n\n')
-  return 'Saved as a request default for this model.'
-}
-
 async function rescanCliParams() {
   rescanLoading.value = true
   try {
@@ -1375,25 +1121,6 @@ async function rescanCliParams() {
     })
   } finally {
     rescanLoading.value = false
-  }
-}
-
-async function copyApiExample() {
-  try {
-    await copyText(requestApiExample.value)
-    toast.add({
-      severity: 'success',
-      summary: 'Copied',
-      detail: 'API example copied to clipboard.',
-      life: 2500,
-    })
-  } catch {
-    toast.add({
-      severity: 'warn',
-      summary: 'Copy failed',
-      detail: 'Select the text manually.',
-      life: 4000,
-    })
   }
 }
 </script>
@@ -1438,54 +1165,6 @@ async function copyApiExample() {
 
 .runtime-empty-message {
   margin-top: 0.85rem;
-}
-
-.config-details-block {
-  padding-top: 0.85rem;
-  padding-bottom: 0.85rem;
-}
-
-.config-details-block > .config-details-summary {
-  list-style: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.875rem;
-  font-weight: 600;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--text-primary);
-}
-
-.config-details-block > .config-details-summary::-webkit-details-marker {
-  display: none;
-}
-
-.config-details-summary__count {
-  font-weight: 600;
-  text-transform: none;
-  letter-spacing: normal;
-  opacity: 0.8;
-}
-
-.config-details-body {
-  margin-top: 0.75rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.65rem;
-}
-
-.setparams-preview__toggle {
-  width: 100%;
-  border: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
 }
 
 .reference-audio-actions {

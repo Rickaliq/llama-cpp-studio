@@ -28,6 +28,7 @@ vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { id: 'audio-model-1' } }),
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   onBeforeRouteLeave: () => {},
+  RouterLink: { props: ['to'], template: '<a><slot /></a>' },
 }))
 
 vi.mock('primevue/usetoast', () => ({
@@ -80,6 +81,11 @@ vi.mock('@/stores/engines', () => ({
     fetchEngineDescriptors,
     invalidateRuntimePlan,
   }),
+}))
+
+vi.mock('@/composables/useAudioContract', async (importOriginal) => ({
+  ...(await importOriginal()),
+  fetchAudioContract: vi.fn().mockResolvedValue({ operations: [] }),
 }))
 
 import axios from 'axios'
@@ -152,12 +158,13 @@ function mountView() {
         Slider: true,
         LoadingState: { template: '<div>loading</div>' },
         EmptyState: { template: '<div><slot /></div>' },
-        PageHeader: { template: '<div><slot name="start" /><slot name="title" /><slot name="actions" /></div>' },
+        PageHeader: {
+          template: '<div><slot name="start" /><slot name="title" /><slot name="actions" /></div>',
+        },
         Dialog: {
           props: ['visible', 'header'],
           emits: ['update:visible', 'show'],
-          template:
-            '<div v-if="visible" class="dialog-stub"><slot /><slot name="footer" /></div>',
+          template: '<div v-if="visible" class="dialog-stub"><slot /><slot name="footer" /></div>',
         },
       },
     },
@@ -167,6 +174,13 @@ function mountView() {
 async function settleView(wrapper) {
   await vi.waitFor(() => expect(wrapper.vm.loading).toBe(false))
   await flushPromises()
+  await wrapper.vm.$nextTick()
+  await flushPromises()
+}
+
+/** Make the form dirty without changing the assertions under test. */
+async function markDirty(wrapper) {
+  wrapper.vm.config.custom_args = '--audio-test'
   await wrapper.vm.$nextTick()
   await flushPromises()
 }
@@ -236,9 +250,7 @@ function paramRegistryResponse(overrides = {}) {
       {
         id: 'voice',
         label: 'Voice & reference',
-        fields: [
-          { key: 'voice_ref', label: 'Reference audio', type: 'path', preset_field: true },
-        ],
+        fields: [{ key: 'voice_ref', label: 'Reference audio', type: 'path', preset_field: true }],
       },
     ],
     request_defaults_key: 'speech_defaults',
@@ -251,8 +263,8 @@ function paramRegistryResponse(overrides = {}) {
     merged.supports_voice_presets = merged.request_defaults_key === 'speech_defaults'
   }
   if (
-    !Object.prototype.hasOwnProperty.call(overrides, 'instructions_policy')
-    && merged.request_defaults_key !== 'speech_defaults'
+    !Object.prototype.hasOwnProperty.call(overrides, 'instructions_policy') &&
+    merged.request_defaults_key !== 'speech_defaults'
   ) {
     merged.instructions_policy = 'none'
   }
@@ -343,9 +355,17 @@ describe('ModelConfig audio profiles', () => {
     const wrapper = mountView()
     await settleView(wrapper)
 
+    await wrapper
+      .findAll('.section-tabs [role="tab"]')
+      .find((tab) => tab.text().includes('Runtime'))
+      .trigger('click')
+    await flushPromises()
+
     expect(wrapper.find('#gpu-mode').exists()).toBe(true)
     expect(wrapper.text()).toContain('All GPUs')
-    const choose = wrapper.findAll('#gpu-mode button').find((button) => button.text() === 'Choose GPUs')
+    const choose = wrapper
+      .findAll('#gpu-mode button')
+      .find((button) => button.text() === 'Choose GPUs')
     await choose.trigger('click')
     expect(wrapper.text()).toContain('RTX 4090')
     expect(wrapper.get('.gpu-card').text()).toContain('Not used')
@@ -353,6 +373,32 @@ describe('ModelConfig audio profiles', () => {
     const assets = wrapper.findAll('button').find((button) => button.text().includes('Assets'))
     await assets.trigger('click')
     expect(wrapper.find('#gpu-mode').exists()).toBe(false)
+  })
+
+  it('uses the audio-config panel ids for every section, including names', async () => {
+    setupAudioMocks()
+    const wrapper = mountView()
+    await settleView(wrapper)
+
+    const labels = wrapper.findAll('.section-tabs [role="tab"]').map((tab) => tab.text())
+    expect(labels).toEqual(['Overview', 'Runtime', 'Assets', 'Defaults', 'Names', 'Launch'])
+
+    expect(wrapper.get('#audio-config-tab-server').attributes('aria-controls')).toBe(
+      'audio-config-panel-server',
+    )
+    expect(wrapper.find('#audio-config-panel-server').exists()).toBe(true)
+    expect(wrapper.get('#audio-config-tab-names').attributes('aria-controls')).toBe(
+      'audio-config-panel-names',
+    )
+    expect(wrapper.get('#audio-config-panel-names').attributes('aria-labelledby')).toBe(
+      'audio-config-tab-names',
+    )
+    expect(wrapper.get('#audio-config-panel-names').text()).toContain('Names & routing')
+
+    await wrapper.get('#audio-config-tab-names').trigger('click')
+    await flushPromises()
+    expect(wrapper.vm.pageTab).toBe('names')
+    expect(wrapper.find('#audio-config-panel-names').isVisible()).toBe(true)
   })
 
   it('renders speech profile card for TTS models', async () => {
@@ -439,6 +485,7 @@ describe('ModelConfig audio profiles', () => {
     const wrapper = mountView()
     await settleView(wrapper)
 
+    await markDirty(wrapper)
     await wrapper.get('button[data-label="Save changes"]').trigger('click')
     await flushPromises()
 
@@ -488,6 +535,7 @@ describe('ModelConfig audio profiles', () => {
     const wrapper = mountView()
     await settleView(wrapper)
 
+    await markDirty(wrapper)
     await wrapper.get('button[data-label="Save changes"]').trigger('click')
     await flushPromises()
 
@@ -552,7 +600,9 @@ describe('ModelConfig audio profiles', () => {
 
     expect(wrapper.text()).not.toContain('Speech synthesis defaults')
     expect(wrapper.text()).not.toContain('Transcription defaults')
-    expect(wrapper.text()).toContain('No request defaults profile is available for this audio model')
+    expect(wrapper.text()).toContain(
+      'No request defaults profile is available for this audio model',
+    )
     expect(listReferenceAudio).toHaveBeenCalledWith('audio-model-1')
   })
 
@@ -614,6 +664,7 @@ describe('ModelConfig audio profiles', () => {
     const wrapper = mountView()
     await settleView(wrapper)
 
+    await markDirty(wrapper)
     await wrapper.get('button[data-label="Save changes"]').trigger('click')
     await flushPromises()
 
@@ -644,6 +695,7 @@ describe('ModelConfig audio profiles', () => {
     const wrapper = mountView()
     await settleView(wrapper)
 
+    await markDirty(wrapper)
     await wrapper.get('button[data-label="Save changes"]').trigger('click')
     await flushPromises()
 
@@ -657,6 +709,87 @@ describe('ModelConfig audio profiles', () => {
         },
       }),
     )
+  })
+
+  it('does not turn untouched parameter defaults into launch flags', async () => {
+    // Saving used to copy every displayed default into the engine section, so
+    // a help-text default reached the engine as an explicit --flag value.
+    setupAudioMocks({
+      sections: [
+        ...paramRegistryResponse().sections,
+        {
+          id: 'server',
+          label: 'Server',
+          params: [
+            {
+              key: 'busy_timeout_ms',
+              label: 'Busy timeout',
+              type: 'int',
+              scope: 'process',
+              supported: true,
+              default: 300000,
+            },
+            {
+              key: 'backend_impl',
+              label: 'Backend impl',
+              type: 'string',
+              scope: 'process',
+              supported: true,
+              default: null,
+            },
+          ],
+        },
+      ],
+    })
+    const wrapper = mountView()
+    await settleView(wrapper)
+
+    await markDirty(wrapper)
+    await wrapper.get('button[data-label="Save changes"]').trigger('click')
+    await flushPromises()
+
+    const saved = vi
+      .mocked(axios.put)
+      .mock.calls.find(([url]) => url === '/api/models/audio-model-1/config')
+    const section = saved[1].engines.audio_cpp
+    expect(section).not.toHaveProperty('busy_timeout_ms')
+    expect(section).not.toHaveProperty('backend_impl')
+  })
+
+  it('keeps parameter values the model config already set', async () => {
+    setupAudioMocks(
+      {
+        sections: [
+          ...paramRegistryResponse().sections,
+          {
+            id: 'server',
+            label: 'Server',
+            params: [
+              {
+                key: 'busy_timeout_ms',
+                label: 'Busy timeout',
+                type: 'int',
+                scope: 'process',
+                supported: true,
+                default: 300000,
+              },
+            ],
+          },
+        ],
+      },
+      { busy_timeout_ms: 120000 },
+    )
+    const wrapper = mountView()
+    await settleView(wrapper)
+
+    await markDirty(wrapper)
+    await wrapper.get('button[data-label="Save changes"]').trigger('click')
+    await flushPromises()
+
+    const saved = vi
+      .mocked(axios.put)
+      .mock.calls.find(([url]) => url === '/api/models/audio-model-1/config')
+    expect(saved[1].engines.audio_cpp.busy_timeout_ms).toBe(120000)
   })
 
   it('hides sub-id variants section for audio engine', async () => {
@@ -720,7 +853,9 @@ describe('ModelConfig audio profiles', () => {
     const wrapper = mountView()
     await settleView(wrapper)
 
-    expect(registryCalls.some((call) => call.family === 'omnivoice' && call.task === 'tts')).toBe(true)
+    expect(registryCalls.some((call) => call.family === 'omnivoice' && call.task === 'tts')).toBe(
+      true,
+    )
     expect(wrapper.vm.config.speech_defaults.temperature).toBe(0.7)
 
     // Install fake timers only around the debounced registry refresh — settleView
@@ -732,7 +867,9 @@ describe('ModelConfig audio profiles', () => {
     await vi.advanceTimersByTimeAsync(300)
     await flushPromises()
 
-    expect(registryCalls.some((call) => call.family === 'ace_step' && call.task === 'gen')).toBe(true)
+    expect(registryCalls.some((call) => call.family === 'ace_step' && call.task === 'gen')).toBe(
+      true,
+    )
     expect(wrapper.vm.paramRegistry.request_defaults_key).toBe('task_defaults')
     expect(wrapper.vm.paramRegistry.api_endpoint).toBe('/audioapi/v1/tasks/run')
     expect(wrapper.vm.config.speech_defaults).toEqual({})

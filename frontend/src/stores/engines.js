@@ -307,7 +307,6 @@ export const useEnginesStore = defineStore('engines', () => {
   const STATUS_REFRESH_EXCLUSIVE = [
     { token: 'sglang_v100', fetch: () => fetchSglangStatus('sglang_v100') },
     { token: 'sglang_sxm2', fetch: () => fetchSglangStatus('sglang_sxm2') },
-    { token: 'sglang_sm70', fetch: () => fetchSglangStatus('sglang_sm70') },
     { token: 'sglang', fetch: () => fetchSglangStatus('sglang') },
     { token: 'vllm', fetch: () => fetchSglangStatus('vllm') },
   ]
@@ -382,8 +381,20 @@ export const useEnginesStore = defineStore('engines', () => {
     return data
   }
 
+  async function activateCuda(params) {
+    const { data } = await axios.post('/api/llama-versions/cuda-activate', params)
+    await fetchCudaStatus()
+    return data
+  }
+
   async function uninstallCuda(params = {}) {
     const { data } = await axios.post('/api/llama-versions/cuda-uninstall', params)
+    await fetchCudaStatus()
+    return data
+  }
+
+  async function cleanupCudaInstallers() {
+    const { data } = await axios.post('/api/llama-versions/cuda-cleanup')
     await fetchCudaStatus()
     return data
   }
@@ -739,7 +750,9 @@ export const useEnginesStore = defineStore('engines', () => {
 
     fetchCudaStatus,
     installCuda,
+    activateCuda,
     uninstallCuda,
+    cleanupCudaInstallers,
 
     fetchLmdeployStatus,
     fetchLmdeployBuildSettings,

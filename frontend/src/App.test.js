@@ -20,6 +20,12 @@ const systemStore = reactive({
 
 const progressStore = reactive({
   isConnected: true,
+  connectionState: 'live',
+  reconnectAttempt: 0,
+  lastEventAt: Date.now(),
+  disconnectedSince: null,
+  hasActiveTasks: false,
+  retryConnection: vi.fn(),
   connect,
   disconnect,
   subscribe,
@@ -45,6 +51,7 @@ vi.mock('@/composables/useTheme', () => ({
 
 import App from './App.vue'
 import { notifySessionExpired } from '@/api/client.js'
+import { routeFailure } from '@/utils/routeRecovery'
 
 function jsonResponse(body, ok = true) {
   return { ok, json: async () => body }
@@ -102,6 +109,7 @@ describe('App', () => {
     visibilityState = 'visible'
     accessBody = { mode: 'local', authenticated: true }
     sessionOk = true
+    routeFailure.value = null
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url) => {
@@ -280,6 +288,25 @@ describe('App', () => {
     expect(wrapper.find('.header-stub').exists()).toBe(false)
     wrapper.unmount()
   })
+  it('renders a shared full-page state when a route module fails to load', async () => {
+    routeFailure.value = { path: '/proxy' }
+    const wrapper = mountApp()
+    await flushPromises()
+
+    const state = wrapper.get('.page-empty[role="alert"]')
+    expect(state.get('h1').text()).toBe('Unable to open this view')
+    expect(state.text()).toContain('The page could not be loaded. Check your connection and retry.')
+    expect(state.findAll('button').map((button) => button.text())).toEqual([
+      'Retry navigation',
+      'Reload Studio',
+    ])
+    expect(wrapper.find('.header-stub').exists()).toBe(true)
+    expect(wrapper.find('.nav-stub').exists()).toBe(true)
+
+    wrapper.unmount()
+    routeFailure.value = null
+  })
+
   it('deduplicates slow system status refreshes and cancels the read when unmounted', async () => {
     vi.useFakeTimers()
     let complete

@@ -19,6 +19,7 @@ vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { id: 'model-1' } }),
   useRouter: () => ({ push: vi.fn() }),
   onBeforeRouteLeave: vi.fn(),
+  RouterLink: { props: ['to'], template: '<a><slot /></a>' },
 }))
 vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }))
 vi.mock('primevue/useconfirm', () => ({ useConfirm: () => ({ require: vi.fn() }) }))
@@ -79,6 +80,8 @@ async function mountConfig() {
       plugins: [pinia],
       directives: { tooltip: () => {} },
       stubs: {
+        ModelConfigActionBar: false,
+        PageToolbar: false,
         Button: {
           props: ['label'],
           emits: ['click'],

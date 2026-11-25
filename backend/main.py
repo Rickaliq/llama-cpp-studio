@@ -29,6 +29,7 @@ from backend.routes import (
     model_config_templates,
     models,
     llama_versions,
+    metrics,
     status,
     gpu_info,
     lmdeploy_versions,
@@ -39,6 +40,7 @@ from backend.routes import (
     runtime,
     inference_keys,
     proxy_admin,
+    storage,
 )
 from backend.models.hub import set_huggingface_token
 from backend.logging_config import describe_error, get_logger, log_api_error, setup_logging
@@ -184,6 +186,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Failed to warm GPU list cache at startup: %s", e)
 
+    # The engine parameter catalog holds megabytes of help text once engines are
+    # scanned. Parsing it off the event loop at startup keeps the first status or
+    # model request from blocking every other request while it parses.
+    from backend.engines.params import read_catalog
+
+    try:
+        await asyncio.to_thread(read_catalog, get_store())
+    except Exception as e:
+        logger.warning("Failed to warm the engine parameter catalog at startup: %s", e)
+
     huggingface_api_key = os.getenv("HUGGINGFACE_API_KEY")
     if huggingface_api_key:
         set_huggingface_token(huggingface_api_key)
@@ -289,6 +301,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.exception("Error stopping %s proxy: %s", proxy_backend, e)
 
+    # Audit records are best effort, but a graceful stop should not drop the
+    # last mutations it just observed.
+    from backend.observability.audit import flush_audit_log
+
+    await asyncio.to_thread(flush_audit_log, 2.0)
+
     # Blocking probes are not cancellable mid-call; wait for the ones still
     # running so no worker can touch the store after the drains above.
     from backend.concurrency import shutdown_blocking
@@ -304,15 +322,32 @@ app = FastAPI(
 )
 
 
-@app.middleware("http")
-async def audio_engine_extension_context(request: Request, call_next):
-    """Resolve which declared audio engine owns an extension request."""
-    engine_id = audio_cpp_versions.engine_for_path(request.url.path)
-    token = audio_cpp_versions.set_engine_context(engine_id)
-    try:
-        return await call_next(request)
-    finally:
-        audio_cpp_versions.reset_engine_context(token)
+class AudioEngineExtensionContextMiddleware:
+    """Resolve which declared audio engine owns an extension request.
+
+    This stays a pure ASGI middleware. ``@app.middleware("http")`` wraps the
+    router in ``BaseHTTPMiddleware``, which runs the endpoint in a child task;
+    the store-write gate only tracks the task that serves the request, so that
+    boundary would let a response escape before its queued operation rows were
+    durable.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        engine_id = audio_cpp_versions.engine_for_path(str(scope.get("path") or ""))
+        token = audio_cpp_versions.set_engine_context(engine_id)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            audio_cpp_versions.reset_engine_context(token)
+
+
+app.add_middleware(AudioEngineExtensionContextMiddleware)
 
 
 @app.exception_handler(HTTPException)
@@ -398,6 +433,7 @@ if len(allow_origins) == 1 and allow_origins[0] == "*":
     allow_credentials_env = False
 
 from backend.access_policy import ManagementAccessMiddleware
+from backend.observability.audit import AuditMiddleware
 from backend.static_assets import HashedAssetFiles
 
 # Fsync queued YAML writes before the response starts. Inside access control so
@@ -406,6 +442,9 @@ app.add_middleware(StoreIoMiddleware)
 
 # Access control is inside CORS so browser clients still receive CORS headers on 401/403.
 app.add_middleware(ManagementAccessMiddleware)
+# Audit sits outside access control so a rejected mutation is still recorded
+# with the actor kind that was presented; it stays inside CORS.
+app.add_middleware(AuditMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
@@ -462,6 +501,7 @@ app.include_router(
 )
 app.include_router(llama_versions.router, prefix="/api/llama-versions", tags=["llama-versions"])
 app.include_router(status.router, prefix="/api", tags=["status"])
+app.include_router(metrics.router, prefix="/api", tags=["observability"])
 app.include_router(config_backup.router, prefix="/api", tags=["config-backup"])
 app.include_router(config_history.router, prefix="/api", tags=["config-history"])
 app.include_router(benchmarks.router, prefix="/api", tags=["benchmarks"])
@@ -479,12 +519,20 @@ app.include_router(
     tags=["inference-access"],
 )
 app.include_router(proxy_admin.router, prefix="/api/proxy", tags=["proxy"])
+app.include_router(storage.router, prefix="/api", tags=["storage"])
 app.include_router(
     audio_openai_proxy.router,
     prefix="/v1/audio",
     tags=["audio-openai-proxy"],
 )
+# Generic task transports (run/stream/batch) share the /v1 origin with the
+# audio routes; they are deliberately not mounted under /v1/audio.
 app.include_router(audio_openai_proxy.tasks_router, prefix="/v1", tags=["audio-tasks-proxy"])
+app.include_router(
+    audio_openai_proxy.task_admin_router,
+    prefix="/v1",
+    tags=["audio-task-admin-proxy"],
+)
 app.include_router(audio_openai_proxy.batches_router, prefix="/v1", tags=["audio-batches-proxy"])
 
 from backend.access_policy import access_status, establish_session

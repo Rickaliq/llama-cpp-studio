@@ -1,9 +1,16 @@
 <template>
   <div class="audio-workspace page-shell page-shell--relaxed page-shell--wide">
-    <PageHeader title="Audio">
+    <PageHeader
+      title="Audio"
+      description="Run speech, transcription, and audio tasks on an audio.cpp model, then play or download the result."
+    >
       <template #meta>
         <Tag v-if="selectedConfig?.family" :value="selectedConfig.family" severity="secondary" />
-        <Tag v-if="selectedConfig?.task" :value="taskDisplayLabel(selectedConfig.task)" severity="info" />
+        <Tag
+          v-if="selectedConfig?.task"
+          :value="taskDisplayLabel(selectedConfig.task)"
+          severity="info"
+        />
         <Tag
           v-if="selectedModel"
           :value="selectedRuntimeState.label"
@@ -43,8 +50,29 @@
 
     <LoadingState v-if="bootLoading" message="Loading audio models…" />
 
-    <EmptyState v-else-if="workspaceError && !audioModels.length" icon="pi pi-exclamation-circle" title="Could not load audio models" :description="workspaceError">
+    <EmptyState
+      v-else-if="workspaceError && !audioModels.length"
+      icon="pi pi-exclamation-circle"
+      title="Could not load audio models"
+      :description="workspaceError"
+    >
       <Button label="Retry" icon="pi pi-refresh" @click="refreshWorkspace" />
+    </EmptyState>
+    <EmptyState
+      v-else-if="audioEngineDisabled"
+      icon="pi pi-power-off"
+      title="audio.cpp is disabled"
+      description="The audio.cpp engine is turned off by the AUDIO_CPP_ENABLED server setting. Enable it and restart Studio before installing audio models."
+    >
+      <Button label="Open Engines" icon="pi pi-cog" @click="$router.push('/engines')" />
+    </EmptyState>
+    <EmptyState
+      v-else-if="audioEngineMissing"
+      icon="pi pi-exclamation-circle"
+      title="audio.cpp engine unavailable"
+      description="This Studio build does not expose an audio.cpp engine. Enable or install audio.cpp on the Engines page before adding audio models."
+    >
+      <Button label="Open Engines" icon="pi pi-cog" @click="$router.push('/engines')" />
     </EmptyState>
     <EmptyState
       v-else-if="!audioModels.length"
@@ -63,12 +91,58 @@
     </EmptyState>
 
     <template v-else>
-      <div v-if="workspaceError" class="state-banner" role="alert">{{ workspaceError }}<Button label="Retry" size="small" @click="refreshWorkspace" /></div>
-      <div v-if="configError" class="state-banner" role="alert">{{ configError }}<Button label="Retry configuration" size="small" @click="refreshWorkspace" /></div>
-      <div v-if="contractError" class="state-banner" role="alert">{{ contractError }}<Button label="Retry capabilities" size="small" @click="loadWorkspaceData(true)" /></div>
-      <div v-if="referenceAudioError" class="state-banner" role="alert">{{ referenceAudioError }}<Button label="Retry reference audio" size="small" @click="loadReferenceAudio(selectedModelId)" /></div>
-      <div class="config-card config-card--compact">
-        <div class="section-label">Model</div>
+      <StateBanner v-if="workspaceError" severity="error" icon="">
+        {{ workspaceError }}
+        <template #actions>
+          <Button label="Retry" size="small" @click="refreshWorkspace" />
+        </template>
+      </StateBanner>
+      <StateBanner v-if="configError" severity="error" icon="">
+        {{ configError }}
+        <template #actions>
+          <Button label="Retry configuration" size="small" @click="refreshWorkspace" />
+        </template>
+      </StateBanner>
+      <StateBanner v-if="contractError" severity="error" icon="">
+        {{ contractError }}
+        <template #actions>
+          <Button label="Retry capabilities" size="small" @click="loadWorkspaceData(true)" />
+        </template>
+      </StateBanner>
+      <StateBanner
+        v-if="driftWarnings.length"
+        severity="warning"
+        role="status"
+        class="contract-drift"
+      >
+        <details>
+          <summary>Engine contract drift ({{ driftWarnings.length }})</summary>
+          <ul>
+            <li v-for="(warning, index) in driftWarnings" :key="`drift-${index}`">
+              {{ warning }}
+            </li>
+          </ul>
+        </details>
+      </StateBanner>
+      <StateBanner v-if="contractValidationHint" severity="info" role="status">
+        {{ contractValidationHint }}
+      </StateBanner>
+      <StateBanner v-if="referenceAudioError" severity="error" icon="">
+        {{ referenceAudioError }}
+        <template #actions>
+          <Button
+            label="Retry reference audio"
+            size="small"
+            @click="loadReferenceAudio(selectedModelId)"
+          />
+        </template>
+      </StateBanner>
+
+      <PageSection
+        variant="compact"
+        title="Model context"
+        description="The model, engine build, and API id this workspace runs against."
+      >
         <div class="audio-model-bar">
           <Select
             v-model="selectedModelId"
@@ -82,65 +156,61 @@
           <code v-if="inferenceModelId" class="param-key-hint" :title="'API model id'">{{
             inferenceModelId
           }}</code>
+          <code
+            v-if="contractEngineVersion"
+            class="param-key-hint"
+            data-testid="audio-engine-version"
+            >audio.cpp {{ contractEngineVersion }}</code
+          >
         </div>
-        <p v-if="needsReferenceHint" class="config-muted-hint audio-model-hint">
-          <span v-if="!referenceAudioOptions.length">No reference audio yet.</span>
-          <Button
-            v-if="!communityVoicesReady"
-            label="Download preset voices"
-            size="small"
-            severity="secondary"
-            :loading="communityVoicesInstalling"
-            @click="installCommunityVoices"
-          />
-          <Button
-            label="Add reference audio"
-            size="small"
-            severity="secondary"
-            :loading="referenceAudioUploading"
-            @click="openReferenceUpload"
-          />
-          <input
-            ref="referenceUploadInput"
-            type="file"
-            accept=".wav,audio/wav,audio/*"
-            class="sr-only"
-            aria-label="Reference audio file"
-            @change="onReferenceAudioSelected"
-          />
-        </p>
-      </div>
+        <PageToolbar v-if="needsReferenceHint" plain label="Reference audio">
+          <template #summary>
+            <span v-if="!referenceAudioOptions.length">No reference audio yet.</span>
+            <span v-else>{{ referenceAudioOptions.length }} reference clips available.</span>
+          </template>
+          <template #actions>
+            <Button
+              v-if="!communityVoicesReady"
+              label="Download preset voices"
+              size="small"
+              severity="secondary"
+              :loading="communityVoicesInstalling"
+              @click="installCommunityVoices"
+            />
+            <Button
+              label="Add reference audio"
+              size="small"
+              severity="secondary"
+              :loading="referenceAudioUploading"
+              @click="openReferenceUpload"
+            />
+            <input
+              ref="referenceUploadInput"
+              type="file"
+              accept=".wav,audio/wav,audio/*"
+              class="sr-only"
+              aria-label="Reference audio file"
+              @change="onReferenceAudioSelected"
+            />
+          </template>
+        </PageToolbar>
+      </PageSection>
 
-      <div class="config-section-tabs" role="tablist" aria-label="Audio tasks">
-        <button
-          v-for="tab in visibleTabs"
-          :key="tab.id"
-          type="button"
-          :id="`audio-tab-${tab.id}`"
-          role="tab"
-          class="config-section-tab"
-          :class="{ selected: activeTab === tab.id }"
-          :aria-selected="activeTab === tab.id"
-          :aria-controls="`audio-panel-${tab.id}`"
-          :tabindex="activeTab === tab.id ? 0 : -1"
-          @click="activeTab = tab.id"
-          @keydown="onRovingTabKeydown"
-        >
-          <span class="engine-option-label">
-            <i :class="tab.icon" aria-hidden="true" />
-            <span class="engine-name">{{ tab.label }}</span>
-          </span>
-        </button>
-      </div>
+      <SectionTabs
+        v-model="activeTab"
+        :items="visibleTabs"
+        id-prefix="audio"
+        variant="pills"
+        responsive-grid
+        aria-label="Audio tasks"
+      />
 
-      <Message
-        v-if="selectedModel && !selectedModel.is_active"
-        severity="warn"
-        :closable="false"
-        class="config-scan-message"
+      <StateBanner
+        v-if="selectedModel && !selectedModel.is_active && !selectedRuntimeState.actionable"
+        severity="warning"
       >
-        {{ selectedRuntimeState.actionable ? '' : 'Start this model and wait for a verified running state before inference.' }}
-      </Message>
+        Start this model and wait for a verified running state before inference.
+      </StateBanner>
 
       <!-- Speech -->
       <div
@@ -151,8 +221,10 @@
         tabindex="0"
         class="config-tab-panel audio-task-layout"
       >
-        <div class="config-card">
-          <div class="section-label">Speech</div>
+        <PageSection
+          title="Speech"
+          description="Synthesize text with the selected voice preset or a reference clip."
+        >
           <div class="param-field">
             <label class="param-field__label" for="audio-speech-text">Text</label>
             <Textarea
@@ -167,7 +239,8 @@
             <div class="param-field">
               <span class="param-field__label" id="audio-speech-voice-label">Voice preset</span>
               <Select
-                input-id="audio-speech-voice" aria-labelledby="audio-speech-voice-label"
+                input-id="audio-speech-voice"
+                aria-labelledby="audio-speech-voice-label"
                 v-model="speechVoice"
                 :options="voicePresetOptions"
                 optionLabel="label"
@@ -178,9 +251,12 @@
               />
             </div>
             <div class="param-field">
-              <span class="param-field__label" id="audio-speech-reference-label">Reference audio</span>
+              <span class="param-field__label" id="audio-speech-reference-label"
+                >Reference audio</span
+              >
               <Select
-                input-id="audio-speech-reference" aria-labelledby="audio-speech-reference-label"
+                input-id="audio-speech-reference"
+                aria-labelledby="audio-speech-reference-label"
                 v-model="speechVoiceRef"
                 :options="referenceAudioOptions"
                 optionLabel="label"
@@ -193,26 +269,41 @@
             </div>
             <div class="param-field">
               <label class="param-field__label" for="audio-speech-language">Language</label>
-              <InputText id="audio-speech-language" v-model="speechLanguage" class="param-input" placeholder="optional" />
+              <InputText
+                id="audio-speech-language"
+                v-model="speechLanguage"
+                class="param-input"
+                placeholder="optional"
+              />
             </div>
             <div v-if="speechStreamingAvailable" class="param-field">
               <label class="param-field__label" for="audio-stream-pcm">Play while generating</label>
               <ToggleSwitch
                 v-model="speechStream"
-                input-id="audio-stream-pcm" aria-label="Stream PCM"
+                input-id="audio-stream-pcm"
+                aria-label="Stream PCM"
               />
             </div>
           </div>
-          <p v-if="speechStreamingAvailable && speechStream" class="config-muted-hint">
+          <p v-if="speechStreamingAvailable && speechStream" class="page-form__hint">
             Play speech as it is generated. Enable streaming mode in the model configuration first.
           </p>
-          <div class="audio-actions">
+          <div class="page-form__actions">
             <Button
               :label="speechStream && speechStreamingAvailable ? 'Speak' : 'Generate'"
               icon="pi pi-volume-up"
               :loading="speechLoading"
               :disabled="!canRun || !speechText.trim()"
               @click="runSpeech"
+            />
+            <Button
+              v-if="speechLoading"
+              label="Cancel"
+              icon="pi pi-stop"
+              size="small"
+              severity="secondary"
+              outlined
+              @click="cancelSpeech"
             />
             <Button
               label="Edit defaults"
@@ -223,13 +314,14 @@
               @click="openConfig"
             />
           </div>
-        </div>
+        </PageSection>
         <AudioResultPanel
           :error="speechError"
           :clips="resultAudioClips"
+          :loading="speechLoading"
           @download="onDownloadClip"
         />
-        <p v-if="speechStreamTiming" class="config-muted-hint">{{ speechStreamTiming }}</p>
+        <p v-if="speechStreamTiming" class="page-form__hint">{{ speechStreamTiming }}</p>
       </div>
 
       <!-- Transcribe -->
@@ -241,23 +333,22 @@
         tabindex="0"
         class="config-tab-panel audio-task-layout"
       >
-        <div class="config-card">
-          <div class="section-label">Transcribe</div>
-          <p class="config-muted-hint">
-            Upload or record audio. Non-WAV formats are converted to WAV at the file's sample rate
-            and channel count. Several files are sent together as one batch of up to 32.
-          </p>
+        <PageSection
+          title="Transcribe"
+          description="Upload or record audio. Non-WAV formats are converted to WAV at the file's sample rate and channel count. Several files are sent together as one batch of up to 32."
+        >
           <div class="param-field section-params">
             <label class="param-field__label" for="audio-asr-file">Audio</label>
             <input
-              ref="asrFileInput" id="audio-asr-file"
+              ref="asrFileInput"
+              id="audio-asr-file"
               type="file"
               multiple
               accept="audio/*,.wav,.ogg,.opus,.mp3,.webm,.m4a"
-              class="audio-file-input"
+              class="sr-only"
               @change="onAsrFile"
             />
-            <div class="audio-actions audio-actions--flush">
+            <div class="audio-file-actions">
               <Button
                 label="Choose files"
                 icon="pi pi-upload"
@@ -272,6 +363,7 @@
                 size="small"
                 severity="secondary"
                 outlined
+                :aria-pressed="recording ? 'true' : 'false'"
                 @click="toggleRecord"
               />
             </div>
@@ -285,15 +377,25 @@
           <div class="params-grid section-params">
             <div class="param-field">
               <label class="param-field__label" for="audio-asr-language">Language</label>
-              <InputText id="audio-asr-language" v-model="asrLanguage" class="param-input" placeholder="en" />
+              <InputText
+                id="audio-asr-language"
+                v-model="asrLanguage"
+                class="param-input"
+                placeholder="en"
+              />
             </div>
             <div class="param-field">
               <label class="param-field__label" for="audio-asr-prompt">Prompt</label>
-              <InputText id="audio-asr-prompt" v-model="asrPrompt" class="param-input" placeholder="optional context" />
+              <InputText
+                id="audio-asr-prompt"
+                v-model="asrPrompt"
+                class="param-input"
+                placeholder="optional context"
+              />
             </div>
           </div>
-          <div class="audio-actions">
-            <label>
+          <div class="page-form__actions">
+            <label class="audio-checkbox-field">
               <input v-model="asrDetails" type="checkbox" :disabled="asrFiles.length > 1" />
               Include timestamps and speaker labels when available
             </label>
@@ -307,22 +409,24 @@
               :disabled="!canRun || !asrFiles.length"
               @click="runAsr"
             />
+            <Button
+              v-if="asrLoading"
+              label="Cancel"
+              icon="pi pi-stop"
+              size="small"
+              severity="secondary"
+              outlined
+              @click="cancelAsr"
+            />
           </div>
-        </div>
-        <div v-if="asrError || asrText || asrBatchResults.length" class="config-card">
-          <div class="section-label">Transcript</div>
-          <Message v-if="asrError" severity="error" :closable="false" class="config-scan-message">
-            {{ asrError }}
-          </Message>
-          <ul v-if="asrBatchResults.length" class="asr-batch-results">
-            <li v-for="(row, index) in asrBatchResults" :key="`${row.name}-${index}`">
-              <strong>{{ row.name }}</strong>
-              <pre class="audio-transcript">{{ row.text }}</pre>
-            </li>
-          </ul>
-          <pre v-else-if="asrText" class="audio-transcript">{{ asrText }}</pre>
-          <pre v-if="asrMetadata" class="audio-transcript">{{ asrMetadata }}</pre>
-        </div>
+        </PageSection>
+        <AudioTranscriptPanel
+          :error="asrError"
+          :loading="asrLoading"
+          :text="asrText"
+          :metadata="asrMetadata"
+          :batch-results="asrBatchResults"
+        />
       </div>
 
       <div
@@ -333,12 +437,14 @@
         tabindex="0"
         class="config-tab-panel audio-task-layout"
       >
-        <div class="config-card">
-          <div class="section-label">{{ taskLabel }}</div>
-          <Message v-if="!workspaceFields.length" severity="info" :closable="false">
-            The active engine has not provided request fields for this model. Scan the model
-            in Configure to discover its inputs.
-          </Message>
+        <PageSection :title="taskLabel">
+          <StateBanner v-if="!workspaceFields.length" severity="info">
+            The active engine has not provided request fields for this model. Scan the model in
+            Configure to discover its inputs.
+            <template #actions>
+              <Button label="Open configuration" size="small" @click="openConfig" />
+            </template>
+          </StateBanner>
           <div v-for="field in workspaceFields" :key="field.key" class="param-field">
             <label class="param-field__label" :for="`audio-task-${field.key}`">
               {{ field.label || field.key }}{{ field.required ? ' *' : '' }}
@@ -350,9 +456,9 @@
               :options="field.options || []"
               :disabled="taskLoading"
             />
-            <small v-if="field.description" class="config-muted-hint">{{ field.description }}</small>
+            <small v-if="field.description" class="page-form__hint">{{ field.description }}</small>
           </div>
-          <div class="audio-actions">
+          <div class="page-form__actions">
             <Button
               :label="taskAction"
               icon="pi pi-play"
@@ -360,11 +466,21 @@
               :disabled="!canRunTask"
               @click="runSchemaTask"
             />
+            <Button
+              v-if="taskLoading"
+              label="Cancel"
+              icon="pi pi-stop"
+              size="small"
+              severity="secondary"
+              outlined
+              @click="cancelTask"
+            />
           </div>
-        </div>
+        </PageSection>
         <AudioResultPanel
           :error="taskError"
           :clips="resultAudioClips"
+          :loading="taskLoading"
           @download="onDownloadClip"
         />
         <pre v-if="taskResult" class="audio-transcript">{{ taskResult }}</pre>
@@ -386,20 +502,23 @@ import Select from 'primevue/select'
 import ToggleSwitch from 'primevue/toggleswitch'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
-import Message from 'primevue/message'
-import PageHeader from '@/components/common/PageHeader.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
+import PageHeader from '@/components/common/PageHeader.vue'
+import PageSection from '@/components/common/PageSection.vue'
+import PageToolbar from '@/components/common/PageToolbar.vue'
+import SectionTabs from '@/components/common/SectionTabs.vue'
+import StateBanner from '@/components/common/StateBanner.vue'
 import AudioResultPanel from '@/components/audio/AudioResultPanel.vue'
 import AudioParamField from '@/components/audio/AudioParamField.vue'
-import { onRovingTabKeydown } from '@/composables/useRovingTabs'
+import AudioTranscriptPanel from '@/components/audio/AudioTranscriptPanel.vue'
 import { requireSingleConfirmation } from '@/composables/singleConfirm'
 import { withheldConfirmation } from '@/composables/actionConfirmation'
 import { useModelStore } from '@/stores/models'
 import { useEnginesStore } from '@/stores/engines'
+import { DEFAULT_AUDIO_ENGINE_ID } from '@/engines/registry'
 import {
   audioInferenceModelId,
-  isGenericTaskEndpoint,
   extractAudioClipsFromTaskResult,
   acceptedSpeechRateKeys,
   fetchAudioVoices,
@@ -411,7 +530,14 @@ import {
   transcribeAudioBatch,
   runAudioTask,
 } from '@/composables/useAudioInferenceClient'
-import { audioTaskDefaultsKey, audioContractError, fetchAudioContract } from '@/composables/useAudioContract'
+import {
+  audioContract,
+  audioContractError,
+  audioEndpointIsGeneric,
+  audioOperationForTask,
+  audioTaskDefaultsKey,
+  fetchAudioContract,
+} from '@/composables/useAudioContract'
 
 const route = useRoute()
 const router = useRouter()
@@ -435,6 +561,17 @@ const workspaceError = ref('')
 const configError = ref('')
 const contractError = ref('')
 const referenceAudioError = ref('')
+const engineDescriptorsLoaded = ref(false)
+const audioEngineDescriptor = computed(
+  () =>
+    (enginesStore.engineDescriptors || []).find(
+      (engine) => engine.id === DEFAULT_AUDIO_ENGINE_ID,
+    ) || null,
+)
+const audioEngineDisabled = computed(() => audioEngineDescriptor.value?.enabled === false)
+const audioEngineMissing = computed(
+  () => engineDescriptorsLoaded.value && !audioEngineDescriptor.value,
+)
 const selectedRuntimeState = computed(() => modelRuntimeState(selectedModel.value))
 const bootLoading = ref(true)
 const refreshing = ref(false)
@@ -462,6 +599,9 @@ const referenceUploadInput = ref(null)
 const REFERENCE_AUDIO_MAX_BYTES = 60 * 1024 * 1024
 const engineVoices = ref([])
 let voicesController = null
+let disposed = false
+/** One controller per inference surface; Cancel aborts the current run. */
+const runControllers = { speech: null, asr: null, task: null }
 
 const asrFiles = ref([])
 const asrFileInput = ref(null)
@@ -475,26 +615,34 @@ const asrDetails = ref(false)
 const asrMetadata = ref('')
 const recording = ref(false)
 let mediaRecorder = null
+let recordStream = null
 let recordChunks = []
 
 const modelRegistry = ref(null)
 const requestValues = ref({})
 const workspaceFields = computed(() => modelRegistry.value?.workspace_request_fields || [])
 const taskLabel = computed(() => visibleTabs.value[0]?.label || 'Run task')
-const taskAction = computed(() => ({ music: 'Generate', design: 'Generate' })[activeTab.value] || taskLabel.value)
-const canRunTask = computed(() => canRun.value && workspaceFields.value.length > 0 &&
-  workspaceFields.value.every((field) => !field.required || (
-    requestValues.value[field.key] != null && String(requestValues.value[field.key]).trim() !== ''
-  )))
+const taskAction = computed(
+  () => ({ music: 'Generate', design: 'Generate' })[activeTab.value] || taskLabel.value,
+)
+const canRunTask = computed(
+  () =>
+    canRun.value &&
+    workspaceFields.value.length > 0 &&
+    workspaceFields.value.every(
+      (field) =>
+        !field.required ||
+        (requestValues.value[field.key] != null &&
+          String(requestValues.value[field.key]).trim() !== ''),
+    ),
+)
 const taskLoading = ref(false)
 const taskError = ref('')
 const taskResult = ref('')
 /** Shared playable outputs for speech, music, VC, separation, design, etc. */
 const resultAudioClips = ref([])
 
-const audioModels = computed(() =>
-  modelStore.allQuantizations.filter((m) => isAudioPackage(m)),
-)
+const audioModels = computed(() => modelStore.allQuantizations.filter((m) => isAudioPackage(m)))
 
 const modelOptions = computed(() =>
   audioModels.value.map((m) => ({
@@ -523,8 +671,14 @@ const proxyStatusSeverity = computed(() => {
   return proxyHealthy.value ? 'success' : 'danger'
 })
 
-const canRun = computed(() => Boolean(selectedRuntimeState.value.actionable && inferenceModelId.value && !contractError.value && !configError.value))
-
+const canRun = computed(() =>
+  Boolean(
+    selectedRuntimeState.value.actionable &&
+    inferenceModelId.value &&
+    !contractError.value &&
+    !configError.value,
+  ),
+)
 
 const communityVoiceIds = computed(() =>
   (referenceAudioItems.value || [])
@@ -537,10 +691,12 @@ const communityVoicesReady = computed(() => communityVoiceIds.value.length > 0)
 const voicePresetOptions = computed(() => {
   const presets = selectedConfig.value?.voice_presets
   const names = presets && typeof presets === 'object' ? Object.keys(presets) : []
-  return [...new Set([...engineVoices.value, ...names, ...communityVoiceIds.value])].map((name) => ({
-    label: name,
-    value: name,
-  }))
+  return [...new Set([...engineVoices.value, ...names, ...communityVoiceIds.value])].map(
+    (name) => ({
+      label: name,
+      value: name,
+    }),
+  )
 })
 
 watch([inferenceModelId, canRun], async ([modelId, running]) => {
@@ -565,15 +721,117 @@ const referenceAudioOptions = computed(() =>
   })),
 )
 
-const modelKind = computed(() => {
-  const kind = taskKindFromConfig(selectedConfig.value || {})
-  // The composed contract decides the serving route; a speech/asr-labelled task
-  // whose operation resolves to tasks_run gets the schema-driven task form.
+const contractEngineVersion = computed(() =>
+  String(audioContract.value.engine_version || '').trim(),
+)
+
+const driftWarnings = computed(() =>
+  (audioContract.value.drift_warnings || []).map((warning) => String(warning)).filter(Boolean),
+)
+
+function versionParts(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^v/i, '')
+    .split(/[.+-]/)
+    .map((part) => {
+      const parsed = Number.parseInt(part, 10)
+      return Number.isFinite(parsed) ? parsed : 0
+    })
+}
+
+/**
+ * Compatibility workstream may add ``validated_through`` / ``engine_supported``
+ * to the contract. When it does, a newer engine is a hint, never a block: the
+ * payload still drives routing and the engine still runs.
+ */
+const engineNewerThanValidated = computed(() => {
+  const contract = audioContract.value
+  if (contract.engine_supported === false) return true
+  if (!contract.validated_through) return false
+  const engine = versionParts(contract.engine_version)
+  const validated = versionParts(contract.validated_through)
+  const length = Math.max(engine.length, validated.length)
+  for (let index = 0; index < length; index += 1) {
+    const enginePart = engine[index] || 0
+    const validatedPart = validated[index] || 0
+    if (enginePart !== validatedPart) return enginePart > validatedPart
+  }
+  return false
+})
+
+const contractValidationHint = computed(() => {
+  if (!engineNewerThanValidated.value) return ''
+  const contract = audioContract.value
+  const engine = contract.engine_version || 'The active engine'
+  const validated = contract.validated_through
+    ? ` Studio validated the contract through ${contract.validated_through}.`
+    : ''
+  return `audio.cpp ${engine} is newer than the contract Studio validated.${validated} Some controls may be incomplete; the engine still runs.`
+})
+
+const configuredTask = computed(() =>
+  String(selectedConfig.value?.task || '')
+    .trim()
+    .toLowerCase(),
+)
+
+/**
+ * Tab presentation for a configured task. Dedicated contract operations map a
+ * task to Speech/Transcribe/Analyze, but UI-only generic surfaces (Music,
+ * Convert, Separate, Design) keep their schema-driven forms because the
+ * contract has no operation that renders their request fields. Without a
+ * contract this is the last-resort offline map.
+ */
+function workspaceKindForOperation(operationId, task) {
+  const presentation = taskKindFromConfig({ task })
+  if (!operationId) return presentation
+  if (['music', 'convert', 'separate', 'analyze', 'design'].includes(presentation)) {
+    return presentation
+  }
+  if (operationId === 'speech') return 'speech'
+  if (['transcriptions', 'transcriptions_details', 'batch_transcriptions'].includes(operationId)) {
+    return 'transcribe'
+  }
+  if (operationId === 'alignments') return 'analyze'
+  if (operationId === 'tasks_run') {
+    // A per-model policy can force a speech/ASR task through tasks/run.
+    return ['speech', 'transcribe'].includes(presentation) ? 'task' : presentation
+  }
+  // A contract operation Studio has no dedicated form for: render the
+  // schema-driven task form instead of guessing at a surface.
+  return 'task'
+}
+
+const modelOperationId = computed(() => {
   const policy = modelRegistry.value?.request_policy || null
-  const generic = policy
-    ? policy.operation_id === 'tasks_run'
-    : isGenericTaskEndpoint(modelRegistry.value?.api_endpoint)
-  return ['speech', 'transcribe'].includes(kind) && generic ? 'task' : kind
+  if (policy?.operation_id) return policy.operation_id
+  const endpoint = modelRegistry.value?.api_endpoint
+  if (endpoint) {
+    const byPath = (audioContract.value.operations || []).find(
+      (operation) => operation.studio_path === endpoint,
+    )
+    if (byPath) return byPath.id
+    if (audioEndpointIsGeneric(endpoint)) return 'tasks_run'
+  }
+  const task = configuredTask.value
+  return task ? audioOperationForTask(task)?.id || '' : ''
+})
+
+function familyPresentationTask() {
+  const family = String(selectedConfig.value?.family || '')
+    .trim()
+    .toLowerCase()
+  if (!family) return ''
+  const tasks = (audioContract.value.family_routing || {})[family]?.tasks || []
+  return tasks.find((task) => taskKindFromConfig({ task }) !== 'task') || tasks[0] || ''
+}
+
+const modelKind = computed(() => {
+  // Contract/model task routing chooses the tab; the configured task is the
+  // input, and family routing fills in when a model has no task row yet.
+  const task = configuredTask.value || familyPresentationTask()
+  return workspaceKindForOperation(modelOperationId.value, task)
 })
 
 const visibleTabs = computed(() => {
@@ -636,7 +894,8 @@ async function installCommunityVoices() {
     toast.add({
       severity: 'success',
       summary: 'Community preset voices installed',
-      detail: 'Apply the proxy config and restart the model, then pick a voice name or a community clip.',
+      detail:
+        'Apply the proxy config and restart the model, then pick a voice name or a community clip.',
       life: 5000,
     })
   } catch (error) {
@@ -658,9 +917,12 @@ async function loadReferenceAudio(modelId) {
   referenceAudioLoading.value = true
   try {
     const items = await modelStore.listReferenceAudio(modelId)
-    if (selectedModelId.value === modelId) referenceAudioItems.value = Array.isArray(items) ? items : []
+    if (selectedModelId.value === modelId)
+      referenceAudioItems.value = Array.isArray(items) ? items : []
   } catch {
-    if (selectedModelId.value === modelId) referenceAudioError.value = 'Could not refresh reference audio. Previously loaded choices are retained.'
+    if (selectedModelId.value === modelId)
+      referenceAudioError.value =
+        'Could not refresh reference audio. Previously loaded choices are retained.'
   } finally {
     if (selectedModelId.value === modelId) referenceAudioLoading.value = false
   }
@@ -672,7 +934,7 @@ async function loadAcceptedSpeechRates(modelId) {
   if (!modelId) return
   try {
     const response = await fetch(
-      `/api/models/param-registry?engine=audio_cpp&model_id=${encodeURIComponent(modelId)}`,
+      `/api/models/param-registry?engine=${encodeURIComponent(DEFAULT_AUDIO_ENGINE_ID)}&model_id=${encodeURIComponent(modelId)}`,
     )
     if (!response.ok) return
     const registry = await response.json()
@@ -685,13 +947,26 @@ async function loadAcceptedSpeechRates(modelId) {
 }
 
 async function loadWorkspaceData(force = false) {
+  const descriptorRequest =
+    typeof enginesStore.fetchEngineDescriptors === 'function'
+      ? enginesStore.fetchEngineDescriptors()
+      : Promise.resolve([])
   const results = await Promise.allSettled([
     modelStore.fetchModels(),
     enginesStore.fetchSystemStatus(),
     fetchAudioContract({ force }),
+    descriptorRequest,
   ])
-  workspaceError.value = results[0].status === 'rejected' ? 'Could not refresh audio models. Check the connection and try again.' : ''
-  contractError.value = results[2].status === 'rejected' || audioContractError.value ? 'Audio capabilities could not be loaded. Retry before running inference.' : ''
+  engineDescriptorsLoaded.value = results[3].status === 'fulfilled'
+  workspaceError.value =
+    results[0].status === 'rejected'
+      ? 'Could not refresh audio models. Check the connection and try again.'
+      : ''
+  contractError.value = audioContractError.value
+    ? audioContractError.value
+    : results[2].status === 'rejected'
+      ? 'Audio capabilities could not be loaded. Retry before running inference.'
+      : ''
 }
 
 async function refreshWorkspace() {
@@ -709,7 +984,11 @@ async function refreshWorkspace() {
               configError.value = ''
             }
           })
-          .catch(() => { if (selectedModelId.value === modelId) configError.value = 'Could not load the model configuration. Retry before running inference.' }),
+          .catch(() => {
+            if (selectedModelId.value === modelId)
+              configError.value =
+                'Could not load the model configuration. Retry before running inference.'
+          }),
         loadReferenceAudio(modelId),
         loadAcceptedSpeechRates(modelId),
       ])
@@ -721,6 +1000,9 @@ async function refreshWorkspace() {
 }
 
 watch(selectedModelId, async (id) => {
+  abortAllRuns()
+  stopPcmPlayer()
+  stopRecorder({ discard: true })
   referenceAudioItems.value = []
   referenceAudioError.value = ''
   selectedConfig.value = null
@@ -821,12 +1103,11 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  disposed = true
+  abortAllRuns()
   clearResultAudio()
-  stopRecorder()
-  if (pcmPlayer) {
-    pcmPlayer.stop()
-    pcmPlayer = null
-  }
+  stopRecorder({ discard: true })
+  stopPcmPlayer()
 })
 
 function clearResultAudio() {
@@ -837,11 +1118,70 @@ function clearResultAudio() {
 }
 
 function publishAudioClips(clips) {
+  if (disposed) return
   clearResultAudio()
   resultAudioClips.value = (clips || []).map((clip) => ({
     ...clip,
     url: URL.createObjectURL(clip.blob),
   }))
+}
+
+function stopPcmPlayer() {
+  const player = pcmPlayer
+  pcmPlayer = null
+  if (player) player.stop()
+}
+
+function beginRun(kind) {
+  runControllers[kind]?.abort()
+  const controller = new AbortController()
+  runControllers[kind] = controller
+  return controller
+}
+
+function runWasCancelled(kind, controller) {
+  return disposed || controller.signal.aborted || runControllers[kind] !== controller
+}
+
+function finishRun(kind, controller) {
+  if (runControllers[kind] !== controller) return false
+  runControllers[kind] = null
+  return true
+}
+
+function abortAllRuns() {
+  for (const kind of Object.keys(runControllers)) {
+    const controller = runControllers[kind]
+    if (!controller) continue
+    controller.abort()
+    runControllers[kind] = null
+  }
+  speechLoading.value = false
+  asrLoading.value = false
+  taskLoading.value = false
+}
+
+function cancelRun(kind) {
+  const controller = runControllers[kind]
+  if (!controller) return
+  controller.abort()
+  runControllers[kind] = null
+  if (kind === 'speech') stopPcmPlayer()
+  if (kind === 'speech') speechLoading.value = false
+  if (kind === 'asr') asrLoading.value = false
+  if (kind === 'task') taskLoading.value = false
+}
+
+function cancelSpeech() {
+  cancelRun('speech')
+}
+
+function cancelAsr() {
+  cancelRun('asr')
+}
+
+function cancelTask() {
+  cancelRun('task')
 }
 
 function setSpeechResult(blob, filename = 'speech.wav') {
@@ -943,9 +1283,7 @@ async function startSelected(confirmation = null) {
   }
 }
 
-const speechStreamingAvailable = computed(
-  () => selectedConfig.value?.mode === 'streaming',
-)
+const speechStreamingAvailable = computed(() => selectedConfig.value?.mode === 'streaming')
 
 /** Gapless queue for SSE PCM deltas: one AudioContext, scheduled by sample index. */
 function createPcmPlayer(sampleRate) {
@@ -953,10 +1291,13 @@ function createPcmPlayer(sampleRate) {
   const context = new Ctx()
   let nextTime = 0
   let sourceEnded = null
+  let resolveSourceEnded = null
   return {
     push(pcmBytes) {
       const samples = new Int16Array(
-        pcmBytes.buffer, pcmBytes.byteOffset, Math.floor(pcmBytes.byteLength / 2),
+        pcmBytes.buffer,
+        pcmBytes.byteOffset,
+        Math.floor(pcmBytes.byteLength / 2),
       )
       if (!samples.length) return
       // Declared-rate buffers are resampled by the context, so playback pitch
@@ -970,8 +1311,12 @@ function createPcmPlayer(sampleRate) {
       source.buffer = buffer
       source.connect(context.destination)
       sourceEnded = new Promise((resolve) => {
-        source.onended = resolve
+        resolveSourceEnded = resolve
       })
+      source.onended = () => {
+        resolveSourceEnded?.()
+        resolveSourceEnded = null
+      }
       const start = Math.max(context.currentTime + 0.02, nextTime)
       source.start(start)
       nextTime = start + buffer.duration
@@ -980,66 +1325,80 @@ function createPcmPlayer(sampleRate) {
       if (sourceEnded) await sourceEnded.catch(() => {})
     },
     stop() {
+      // A cancel can land while finish() is awaiting playback; resolve it so
+      // the aborted run settles instead of leaving a pending promise.
+      resolveSourceEnded?.()
+      resolveSourceEnded = null
       context.close().catch(() => {})
     },
   }
 }
 
 async function runSpeech() {
+  if (speechLoading.value) return
   speechError.value = ''
   taskError.value = ''
   speechStreamTiming.value = ''
   speechLoading.value = true
   setSpeechResult(null)
-  if (pcmPlayer) {
-    pcmPlayer.stop()
-    pcmPlayer = null
-  }
+  stopPcmPlayer()
   const extras = {}
   const defaults = selectedConfig.value?.speech_defaults || {}
   Object.assign(extras, pickDefined(defaults, ['voice_ref', 'reference_text', 'instruct']))
   Object.assign(extras, speechRateRequestFields(defaults, acceptedSpeechRates.value))
   if (speechVoiceRef.value) {
     extras.voice_ref = speechVoiceRef.value
-    const match = (referenceAudioItems.value || []).find((item) => item.path === speechVoiceRef.value)
+    const match = (referenceAudioItems.value || []).find(
+      (item) => item.path === speechVoiceRef.value,
+    )
     if (match?.reference_text && !extras.reference_text) {
       extras.reference_text = match.reference_text
     }
   }
+  const controller = beginRun('speech')
+  const task = configuredTask.value || 'tts'
+  let player = null
   try {
     if (speechStreamingAvailable.value && speechStream.value) {
-      const player = createPcmPlayer(SPEECH_STREAM_SAMPLE_RATE)
+      player = createPcmPlayer(SPEECH_STREAM_SAMPLE_RATE)
       pcmPlayer = player
       const { blob, timing } = await streamSpeech({
+        task,
         modelId: inferenceModelId.value,
         input: speechText.value,
         voice: speechVoice.value || undefined,
         sampleRate: SPEECH_STREAM_SAMPLE_RATE,
         extras,
-        onAudio: (bytes) => player.push(bytes),
+        signal: controller.signal,
+        onAudio: (bytes) => {
+          if (!runWasCancelled('speech', controller)) player.push(bytes)
+        },
       })
+      if (runWasCancelled('speech', controller)) return
       await player.finish()
+      if (runWasCancelled('speech', controller)) return
       if (timing?.ttft_ms != null) {
         speechStreamTiming.value = `First audio in ${Math.round(timing.ttft_ms)} ms`
       }
       setSpeechResult(blob, 'speech.wav')
     } else {
       const { blob } = await synthesizeSpeech({
+        task,
         modelId: inferenceModelId.value,
         input: speechText.value,
         voice: speechVoice.value || undefined,
         extras,
+        signal: controller.signal,
       })
+      if (runWasCancelled('speech', controller)) return
       setSpeechResult(blob, 'speech.wav')
     }
   } catch (error) {
+    if (runWasCancelled('speech', controller) || error?.name === 'AbortError') return
     speechError.value = error?.message || String(error)
   } finally {
-    if (pcmPlayer) {
-      pcmPlayer.stop()
-      pcmPlayer = null
-    }
-    speechLoading.value = false
+    if (pcmPlayer === player) stopPcmPlayer()
+    if (finishRun('speech', controller)) speechLoading.value = false
   }
 }
 
@@ -1070,21 +1429,32 @@ async function toggleRecord() {
   }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    if (disposed) {
+      stream.getTracks().forEach((track) => track.stop())
+      return
+    }
     recordChunks = []
-    mediaRecorder = new MediaRecorder(stream)
-    mediaRecorder.ondataavailable = (ev) => {
+    recordStream = stream
+    const recorder = new MediaRecorder(stream)
+    recorder.__studioDiscard = false
+    mediaRecorder = recorder
+    recorder.ondataavailable = (ev) => {
       if (ev.data?.size) recordChunks.push(ev.data)
     }
-    mediaRecorder.onstop = () => {
-      stream.getTracks().forEach((t) => t.stop())
-      const blob = new Blob(recordChunks, { type: mediaRecorder?.mimeType || 'audio/webm' })
+    recorder.onstop = () => {
+      recordStream?.getTracks().forEach((track) => track.stop())
+      recordStream = null
+      if (mediaRecorder === recorder) mediaRecorder = null
+      if (recorder.__studioDiscard || disposed) return
+      const blob = new Blob(recordChunks, { type: recorder.mimeType || 'audio/webm' })
       asrFiles.value = [new File([blob], 'recording.webm', { type: blob.type })]
       asrBatchResults.value = []
-      mediaRecorder = null
+      recording.value = false
     }
-    mediaRecorder.start()
+    recorder.start()
     recording.value = true
   } catch (error) {
+    if (disposed) return
     toast.add({
       severity: 'error',
       summary: 'Microphone unavailable',
@@ -1094,27 +1464,38 @@ async function toggleRecord() {
   }
 }
 
-function stopRecorder() {
-  if (mediaRecorder && recording.value) {
-    mediaRecorder.stop()
-  }
+function stopRecorder({ discard = false } = {}) {
+  const recorder = mediaRecorder
   recording.value = false
+  if (recorder) recorder.__studioDiscard = discard
+  if (recorder && recorder.state !== 'inactive') {
+    recorder.stop()
+  } else if (!recorder) {
+    recordStream?.getTracks().forEach((track) => track.stop())
+    recordStream = null
+  }
 }
 
 async function runAsr() {
+  if (asrLoading.value) return
   asrError.value = ''
   asrText.value = ''
   asrMetadata.value = ''
   asrBatchResults.value = []
   asrLoading.value = true
+  const controller = beginRun('asr')
+  const task = configuredTask.value || 'asr'
   try {
     if (asrFiles.value.length > 1) {
       const result = await transcribeAudioBatch({
+        task: 'batch_transcribe',
         modelId: inferenceModelId.value,
         files: asrFiles.value,
         language: asrLanguage.value || undefined,
         prompt: asrPrompt.value || undefined,
+        signal: controller.signal,
       })
+      if (runWasCancelled('asr', controller)) return
       asrBatchResults.value = Array.isArray(result?.results) ? result.results : []
       if (!asrBatchResults.value.length && result?.text) {
         asrText.value = result.text
@@ -1123,52 +1504,62 @@ async function runAsr() {
     }
     const file = asrFiles.value[0]
     const result = await transcribeAudio({
+      task,
       modelId: inferenceModelId.value,
       file,
       filename: file?.name,
       language: asrLanguage.value || undefined,
       prompt: asrPrompt.value || undefined,
       details: asrDetails.value,
+      signal: controller.signal,
     })
+    if (runWasCancelled('asr', controller)) return
     asrText.value = result?.text || JSON.stringify(result, null, 2)
     if (asrDetails.value && result && typeof result === 'object') {
       const { text: _text, ...metadata } = result
       asrMetadata.value = Object.keys(metadata).length ? JSON.stringify(metadata, null, 2) : ''
     }
   } catch (error) {
+    if (runWasCancelled('asr', controller) || error?.name === 'AbortError') return
     asrError.value = error?.message || String(error)
   } finally {
-    asrLoading.value = false
+    if (finishRun('asr', controller)) asrLoading.value = false
   }
 }
 
-async function runTask(task, input, { defaultFilename = 'audio.wav' } = {}) {
+async function runTask(input, { defaultFilename = 'audio.wav' } = {}) {
+  if (taskLoading.value) return
   taskError.value = ''
   setTaskResult(null)
   taskLoading.value = true
+  const controller = beginRun('task')
   try {
     const result = await runAudioTask({
       modelId: inferenceModelId.value,
-      task,
+      task: configuredTask.value,
       input,
-      proxyPort: enginesStore.systemStatus?.proxy_status?.port,
+      signal: controller.signal,
     })
+    if (runWasCancelled('task', controller)) return
     setTaskResult(result, { defaultFilename })
   } catch (error) {
+    if (runWasCancelled('task', controller) || error?.name === 'AbortError') return
     taskError.value = error?.message || String(error)
   } finally {
-    taskLoading.value = false
+    if (finishRun('task', controller)) taskLoading.value = false
   }
 }
 
 function initializeRequestValues(config) {
-  const defaultsKey = modelRegistry.value?.request_defaults_key
-    || audioTaskDefaultsKey(selectedConfig.value?.task)
+  const defaultsKey =
+    modelRegistry.value?.request_defaults_key || audioTaskDefaultsKey(selectedConfig.value?.task)
   const defaults = config?.[defaultsKey] || {}
-  requestValues.value = Object.fromEntries(workspaceFields.value.map((field) => [
-    field.key,
-    (field.nested ? defaults.options?.[field.key] : defaults[field.key]) ?? field.default ?? null,
-  ]))
+  requestValues.value = Object.fromEntries(
+    workspaceFields.value.map((field) => [
+      field.key,
+      (field.nested ? defaults.options?.[field.key] : defaults[field.key]) ?? field.default ?? null,
+    ]),
+  )
 }
 
 function runSchemaTask() {
@@ -1180,7 +1571,7 @@ function runSchemaTask() {
     if (field.nested) (input.options ||= {})[field.key] = value
     else input[field.key] = value
   }
-  return runTask(selectedConfig.value?.task, input)
+  return runTask(input)
 }
 
 function downloadBlob(blob, name) {
@@ -1215,34 +1606,38 @@ function pickDefined(obj, keys) {
   min-width: 12rem;
 }
 
-.audio-model-hint {
-  margin-top: 0.65rem;
+/* The two-column task layout is an audio-specific exception: the engine form
+   and its result panel read as a pair on desktop and stack on narrow screens. */
+@media (min-width: 900px) {
+  .audio-task-layout:has(> :nth-child(2)) {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    align-items: start;
+    gap: 0.75rem;
+  }
 }
 
-.audio-inline-link {
-  padding: 0 !important;
-  vertical-align: baseline;
-}
-
-.audio-actions {
+.audio-file-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
-  margin-top: 0.85rem;
 }
 
-.audio-actions--flush {
-  margin-top: 0.35rem;
+.audio-checkbox-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.125rem;
+  font-size: var(--text-sm);
 }
 
-.asr-file-list,
-.asr-batch-results {
-  list-style: none;
-  margin: 0.4rem 0 0;
-  padding: 0;
+.asr-file-list {
   display: grid;
   gap: 0.25rem;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
 }
 
 .asr-file-list li {
@@ -1251,20 +1646,50 @@ function pickDefined(obj, keys) {
   justify-content: space-between;
   gap: 0.5rem;
   min-height: 2rem;
-  font-size: 0.85rem;
+  font-size: var(--text-sm);
 }
 
 .asr-file-list button {
+  min-height: 2rem;
   border: 0;
   background: transparent;
   color: var(--text-secondary);
-  cursor: pointer;
   font: inherit;
-  min-height: 2rem;
+  cursor: pointer;
 }
 
-.asr-batch-results strong {
-  font-size: 0.85rem;
+.audio-transcript {
+  max-height: 20rem;
+  margin: 0;
+  padding: 0.75rem;
+  overflow: auto;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-surface) 65%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.contract-drift details {
+  min-width: 0;
+}
+
+.contract-drift summary {
+  cursor: pointer;
+}
+
+.contract-drift ul {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+}
+
+:deep(.page-empty__actions) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 @media (max-width: 768px) {
@@ -1275,52 +1700,13 @@ function pickDefined(obj, keys) {
   }
 }
 
-@media (min-width: 900px) {
-  .audio-task-layout:has(> :nth-child(2)) {
-    display: grid;
-    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-    align-items: start;
-    gap: 0.75rem;
+@media (max-width: 640px), (pointer: coarse) {
+  .audio-checkbox-field {
+    min-height: 2.75rem;
   }
-}
 
-.audio-player {
-  display: block;
-  width: 100%;
-}
-
-.task-audio-clip + .task-audio-clip {
-  margin-top: 1rem;
-  padding-top: 0.85rem;
-  border-top: 1px solid var(--border-primary, #2a2f45);
-}
-
-.task-audio-clip .audio-actions {
-  margin-top: 0.5rem;
-}
-
-.audio-transcript {
-  margin: 0;
-  padding: 0.75rem;
-  border-radius: var(--radius-md, 0.5rem);
-  border: 1px solid var(--border-primary, #2a2f45);
-  background: rgba(0, 0, 0, 0.2);
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 0.85rem;
-  line-height: 1.45;
-  max-height: 20rem;
-  overflow: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-
-.audio-file-input {
-  display: none;
-}
-
-:deep(.page-empty__actions) {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
+  .asr-file-list button {
+    min-height: 2.75rem;
+  }
 }
 </style>

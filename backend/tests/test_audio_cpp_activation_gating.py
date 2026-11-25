@@ -19,7 +19,10 @@ def _model(model_id: str, family: str, task: str = "tts") -> dict:
     return {
         "id": model_id,
         "compatible_engines": ["audio_cpp"],
-        "config": {"engine": "audio_cpp", "engines": {"audio_cpp": {"family": family, "task": task}}},
+        "config": {
+            "engine": "audio_cpp",
+            "engines": {"audio_cpp": {"family": family, "task": task}},
+        },
     }
 
 
@@ -48,7 +51,12 @@ def test_only_models_intersecting_delta_are_rescanned(tmp_path, monkeypatch):
         "backend.engines.audio_cpp.activation._profile_cache_is_fresh",
         lambda *a, **k: True,
     )
-    delta = {"added_families": ["omnivoice"], "removed_families": [], "added_tasks": [], "removed_tasks": []}
+    delta = {
+        "added_families": ["omnivoice"],
+        "removed_families": [],
+        "added_tasks": [],
+        "removed_tasks": [],
+    }
     plan = plan_profile_rescans(store, _row(tmp_path), delta, contract_changed=False)
     assert [(m["id"], force) for m, force in plan] == [("b", True)]
 
@@ -97,12 +105,111 @@ async def test_rescan_runs_with_bounded_concurrency(tmp_path, monkeypatch):
             active["current"] -= 1
         return {"fingerprint": f"fp-{model.get('id')}", "scan_error": None}
 
-    monkeypatch.setattr(
-        "backend.engines.scan.scanner.scan_audio_cpp_model_profile", fake_profile
-    )
+    monkeypatch.setattr("backend.engines.scan.scanner.scan_audio_cpp_model_profile", fake_profile)
     store = FakeStore([_model(f"m{i}", "qwen3_tts") for i in range(8)])
     plan = [(m, True) for m in store.list_models()]
     results = await act_mod.rescan_model_profiles(store, _row(tmp_path), plan)
     assert len(results) == 8
     assert all(row["ok"] for row in results)
     assert active["peak"] <= act_mod.RESCAN_CONCURRENCY
+
+
+# --- activation gate: old build vs unloadable binary -------------------------
+
+
+def _version_store(tmp_path):
+    from backend import data_store
+
+    return data_store.DataStore(config_dir=str(tmp_path / "config"))
+
+
+def _script(path, body: str):
+    path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _registered_row(store, cli, version="v1"):
+    row = {
+        "version": version,
+        "cli_binary_path": str(cli),
+        "server_binary_path": str(cli),
+    }
+    store.add_engine_version("audio_cpp", dict(row))
+    return row
+
+
+def test_activation_advises_an_update_for_an_old_but_runnable_build(tmp_path):
+    from fastapi import HTTPException
+
+    from backend.engines.audio_cpp.activation import assert_activation_supported
+
+    store = _version_store(tmp_path)
+    cli = _script(tmp_path / "audiocpp_cli", 'echo "Usage: audiocpp_cli [options]"\n')
+    row = _registered_row(store, cli)
+
+    with pytest.raises(HTTPException) as excinfo:
+        assert_activation_supported(store, row)
+
+    detail = str(excinfo.value.detail)
+    assert "--list-loaders --json" in detail
+    assert "v0.9.1" in detail
+    assert "Update audio.cpp" in detail
+    assert "cannot run on this host" not in detail
+
+
+def test_activation_reports_a_binary_that_cannot_execute(tmp_path):
+    from fastapi import HTTPException
+
+    from backend.engines.audio_cpp.activation import assert_activation_supported
+
+    store = _version_store(tmp_path)
+    cli = _script(
+        tmp_path / "audiocpp_cli",
+        'echo "$0: /lib/x86_64-linux-gnu/libc.so.6: version GLIBC_2.43 not found" >&2\nexit 1\n',
+    )
+    row = _registered_row(store, cli)
+
+    with pytest.raises(HTTPException) as excinfo:
+        assert_activation_supported(store, row)
+
+    detail = str(excinfo.value.detail)
+    assert "cannot run on this host" in detail
+    assert "GLIBC_2.43" in detail
+    assert "host glibc:" in detail
+    assert "build this release from source" in detail
+    assert "Update audio.cpp" not in detail
+
+
+def test_loader_probe_failure_carries_the_loader_excerpt(tmp_path):
+    from backend.engines.scan.scanner import (
+        _run_audio_cpp_loaders,
+        audio_cpp_probe_failure_is_execution,
+    )
+
+    cli = _script(
+        tmp_path / "audiocpp_cli",
+        'echo "$0: /lib/x86_64-linux-gnu/libc.so.6: version GLIBC_2.43 not found" >&2\nexit 1\n',
+    )
+
+    payload, error = _run_audio_cpp_loaders(str(cli))
+
+    assert payload is None
+    assert "process exited with code 1" in error
+    assert "GLIBC_2.43 not found" in error
+    assert audio_cpp_probe_failure_is_execution(error) is True
+
+
+def test_loader_probe_failure_for_an_old_build_is_not_an_exec_failure(tmp_path):
+    from backend.engines.scan.scanner import (
+        _run_audio_cpp_loaders,
+        audio_cpp_probe_failure_is_execution,
+    )
+
+    cli = _script(tmp_path / "audiocpp_cli", 'echo "Usage: audiocpp_cli [options]"\n')
+
+    payload, error = _run_audio_cpp_loaders(str(cli))
+
+    assert payload is None
+    assert "Usage: audiocpp_cli" in error
+    assert audio_cpp_probe_failure_is_execution(error) is False

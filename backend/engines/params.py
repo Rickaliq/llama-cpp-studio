@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import os
+import tempfile
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -15,7 +18,12 @@ logger = get_logger(__name__)
 CATALOG_FILENAME = "engine_params_catalog.yaml"
 CSV_DESCRIPTION_MARKERS = ("comma-separated", "comma separated", "csv")
 _YAML_SAFE_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+_YAML_SAFE_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
 _CATALOG_CACHE: Dict[str, tuple[int, int, dict]] = {}
+#: Serializes catalog writers. Deliberately not the store lock: the catalog is
+#: megabytes of help text, and parsing/dumping it while holding the store-wide
+#: lock blocked every other request (and the proxy) on the event loop.
+_CATALOG_WRITE_LOCK = threading.RLock()
 
 
 def _default_catalog_root() -> dict:
@@ -50,19 +58,39 @@ def read_catalog(store: Any) -> dict:
         stat = None
         cache_key = os.path.abspath(path)
 
-    with store._lock:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = yaml.load(f, Loader=_YAML_SAFE_LOADER) or {}
-        except FileNotFoundError:
-            data = {}
-        except Exception as e:
-            logger.warning("Failed to read %s: %s", path, e)
-            data = {}
+    # Writers replace the file atomically (os.replace), so a plain read sees the
+    # old or the new document. Do not take the store-wide lock here: holding it
+    # across a multi-megabyte parse stalled every request on the event loop.
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.load(f, Loader=_YAML_SAFE_LOADER) or {}
+    except FileNotFoundError:
+        data = {}
+    except Exception as e:
+        logger.warning("Failed to read %s: %s", path, e)
+        data = {}
     root = _normalize_catalog_root(data)
     if stat is not None:
-        _CATALOG_CACHE[cache_key] = (stat.st_mtime_ns, stat.st_size, root)
+        _remember_catalog(path, root)
     return root
+
+
+def _remember_catalog(path: str, root: dict) -> None:
+    """Serve the document a writer just persisted from memory, never from a re-parse.
+
+    ``engine_params_catalog.yaml`` grows with every scanned audio.cpp version
+    (megabytes of help text). Re-parsing it on the event loop blocked the API
+    and the proxy for seconds right after an install; writers now refresh this
+    cache instead of dropping it, so a following ``/status`` poll is a dict
+    lookup.
+    """
+    key = os.path.abspath(path)
+    try:
+        stat = os.stat(key)
+    except OSError:
+        _CATALOG_CACHE.pop(key, None)
+        return
+    _CATALOG_CACHE[key] = (stat.st_mtime_ns, stat.st_size, root)
 
 
 def get_version_entry(store: Any, engine: str, version: str) -> Optional[dict]:
@@ -83,30 +111,50 @@ def get_model_profile_entry(
     return profile if isinstance(profile, dict) else None
 
 
+def _write_catalog_file(path: str, root: dict) -> None:
+    """Atomically replace the catalog YAML without taking the store lock."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            yaml.dump(
+                root,
+                handle,
+                Dumper=_YAML_SAFE_DUMPER,
+                default_flow_style=False,
+                sort_keys=False,
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _catalog_for_write(store: Any) -> tuple[str, dict]:
+    """A private, mutable copy of the catalog document to merge into."""
+    path = os.path.join(str(store._config_dir), CATALOG_FILENAME)
+    with _CATALOG_WRITE_LOCK:
+        return path, copy.deepcopy(read_catalog(store))
+
+
 def upsert_version_entry(
     store: Any,
     engine: str,
     version: str,
     entry: dict,
 ) -> None:
-    """Merge one version entry into the catalog YAML (atomic write, under lock)."""
-    with store._lock:
-        path = os.path.join(store._config_dir, CATALOG_FILENAME)
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f) or {}
-            except Exception as e:
-                logger.warning("Failed to read %s: %s", path, e)
-                data = {}
-        else:
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        root = _default_catalog_root()
-        root.update(data)
-        root.setdefault("engines", {})
-        root["engines"].setdefault(engine, {"versions": {}})
+    """Merge one version entry into the catalog YAML (atomic write)."""
+    with _CATALOG_WRITE_LOCK:
+        path, root = _catalog_for_write(store)
+        root.setdefault("engines", {}).setdefault(engine, {"versions": {}})
         root["engines"][engine].setdefault("versions", {})
         previous = root["engines"][engine]["versions"].get(version)
         merged = dict(previous) if isinstance(previous, dict) else {}
@@ -114,8 +162,8 @@ def upsert_version_entry(
         if isinstance(previous, dict) and "profiles" not in entry:
             merged["profiles"] = previous.get("profiles") or {}
         root["engines"][engine]["versions"][version] = merged
-        store._write_yaml(path, root)
-        _CATALOG_CACHE.pop(os.path.abspath(path), None)
+        _write_catalog_file(path, root)
+        _remember_catalog(path, _normalize_catalog_root(root))
 
 
 def upsert_model_profile_entry(
@@ -126,25 +174,15 @@ def upsert_model_profile_entry(
     profile: dict,
 ) -> None:
     """Persist one model-specific option profile without replacing version help."""
-    with store._lock:
-        path = os.path.join(store._config_dir, CATALOG_FILENAME)
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f) or {}
-            except Exception as e:
-                logger.warning("Failed to read %s: %s", path, e)
-                data = {}
-        else:
-            data = {}
-        root = _normalize_catalog_root(data)
+    with _CATALOG_WRITE_LOCK:
+        path, root = _catalog_for_write(store)
         engine_row = root["engines"].setdefault(engine, {"versions": {}})
         versions = engine_row.setdefault("versions", {})
         version_row = versions.setdefault(version, {})
         profiles = version_row.setdefault("profiles", {})
         profiles[fingerprint] = dict(profile)
-        store._write_yaml(path, root)
-        _CATALOG_CACHE.pop(os.path.abspath(path), None)
+        _write_catalog_file(path, root)
+        _remember_catalog(path, root)
 
 
 def iso_now() -> str:
@@ -166,11 +204,7 @@ def flags_from_entry(entry: Optional[dict]) -> List[str]:
 
 def _normalize_param_row(param: dict) -> dict:
     row = dict(param or {})
-    flags = [
-        str(f)
-        for f in (row.get("flags") or [])
-        if isinstance(f, str) and f.startswith("--")
-    ]
+    flags = [str(f) for f in (row.get("flags") or []) if isinstance(f, str) and f.startswith("--")]
     flags = list(dict.fromkeys(flags))
     primary_flag = row.get("primary_flag")
     if not primary_flag and flags:
@@ -210,9 +244,7 @@ def _normalize_param_row(param: dict) -> dict:
     row["negative_flag"] = negative_flag
     row["value_kind"] = value_kind
     row["scalar_type"] = scalar_type
-    row["multiple"] = bool(
-        value_kind in ("repeatable", "space_list", "csv_enum", "semicolon_enum")
-    )
+    row["multiple"] = bool(value_kind in ("repeatable", "space_list", "csv_enum", "semicolon_enum"))
     if value_kind == "flag":
         row["type"] = "bool"
     elif value_kind == "json_object":
@@ -403,7 +435,7 @@ def registry_payload_from_entry(
         "inspection": (profile or {}).get("inspection") if profile else None,
         "compatibility_warnings": list(compatibility_warnings or []),
     }
-    if engine in {"sglang", "sglang_v100", "sglang_sxm2", "sglang_sm70"}:
+    if engine in {"sglang", "sglang_v100", "sglang_sxm2"}:
         # LLM and diffusion flags can share names but have different types,
         # defaults, and choices. Keep their catalogs separate all the way to
         # the form rather than merging e.g. the two quantization parameters.

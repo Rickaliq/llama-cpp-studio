@@ -30,7 +30,12 @@ from backend.engines.audio_cpp.tracking import (
     split_settings,
 )
 from backend.engines.audio_cpp.build_options import catalog_for_ui, coerce_build_settings
+from backend.engines.audio_cpp.compatibility import compatibility_fields
 from backend.engines.audio_cpp.identity import default_audio_engine_id
+from backend.engines.audio_cpp.integration.upstream_adapter import (
+    fetch_upstream_contract,
+    upstream_contract_enabled,
+)
 from backend.engines.definitions.extensions import assert_extensions_served
 from backend.repo_identity import source_build_type_labels_for_engine
 from backend.build_task_manager import BuildTaskManager
@@ -100,6 +105,22 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+async def _upstream_contract_available(active: Optional[dict]) -> bool:
+    """Whether an opted-in audio.cpp#852 contract document exists for *active*.
+
+    ``AUDIO_CPP_UPSTREAM_CONTRACT`` is off by default, so the normal path
+    returns False without touching the filesystem or executing anything. The
+    probe runs on the blocking pool because it may exec the installed server.
+    """
+    if not active or not upstream_contract_enabled():
+        return False
+    try:
+        return (await asyncio.to_thread(fetch_upstream_contract, active)) is not None
+    except Exception:
+        logger.debug("audio.cpp upstream contract probe failed", exc_info=True)
+        return False
+
+
 def _ref_kind(value: str) -> str:
     """Classify a git ref: commit SHA, GitHub release tag, or branch."""
     ref = str(value or "").strip()
@@ -119,6 +140,36 @@ def _version_slug(value: str) -> str:
 def release_version_name(tag: str) -> str:
     """Version id shared by a release archive and a source build of that tag."""
     return _version_slug(tag)
+
+
+def audio_version_list_row(
+    engine_id: str, version_row: dict, active_version: Optional[str]
+) -> dict:
+    """Engines-view row for one installed audio.cpp version.
+
+    ``routes.llama_versions`` owns the shared version list; this keeps the
+    audio-specific fields (including the compatibility ceiling) next to the
+    rest of the audio version surface instead of growing that route.
+    """
+    from backend.engines.lifecycle import annotate_version_row
+
+    annotated = annotate_version_row(engine_id, version_row)
+    version = annotated.get("version")
+    display_type = annotated.get("type", "source")
+    return {
+        **annotated,
+        "id": f"{engine_id}:{version}",
+        "version": version,
+        "engine_version": version,
+        **compatibility_fields(version),
+        "type": display_type,
+        "install_type": annotated.get("install_type")
+        or ("source" if display_type in {"fork", "patched", "source"} else display_type),
+        "is_fork": bool(annotated.get("is_fork")) or display_type == "fork",
+        "is_active": version == active_version,
+        "repository_source": "audio.cpp",
+        "cmake_editable": True,
+    }
 
 
 def _release_type_labels() -> Dict[str, Any]:
@@ -968,9 +1019,13 @@ async def status():
     caps = (entry or {}).get("capabilities") or {}
     from backend.engines.audio_cpp.model_managers import resolve_model_manager_path
 
+    active_version = str((active or {}).get("version") or "")
     return {
         "installed": bool(store.get_engine_versions(current_engine_id())),
         "active": active,
+        "engine_version": active_version or None,
+        **compatibility_fields(active_version),
+        "upstream_contract_available": await _upstream_contract_available(active),
         "runnable": bool(
             active
             and all(
@@ -1036,9 +1091,11 @@ async def get_integration_contract():
                 "let its parameter scan finish."
             ),
         )
+    active_version = str(active.get("version") or "")
     return {
         **descriptor,
-        "engine_version": str(active.get("version") or ""),
+        "engine_version": active_version,
+        **compatibility_fields(active_version),
         "contract_fingerprint": (entry or {}).get("contract_fingerprint"),
         "contract_changed": bool((entry or {}).get("contract_changed")),
         "scanned_at": (entry or {}).get("scanned_at"),
@@ -1073,6 +1130,14 @@ async def save_build_settings(payload: dict = Body(default_factory=dict)):
             if key not in {"tracking_ref", "repository_url", "build_config"}
         }
     build_config = coerce_build_settings(build_config)
+    # Fail on save, not in a CMake log: upstream's configure guards (CUDA/HIP,
+    # OpenSSL, server frontends, ZONOS3 textnorm, custom model set) plus the
+    # backends Studio can actually run.
+    manager = get_audio_cpp_manager()
+    try:
+        manager.validate_build_config(manager.build_config_from_dict(build_config))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     merged = merge_settings(
         tracking_ref=payload.get("tracking_ref"),
         repository_url=payload.get("repository_url"),

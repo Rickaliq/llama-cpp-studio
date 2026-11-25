@@ -38,14 +38,29 @@ _STAGE_MESSAGES = {
 
 @dataclass
 class AudioCppBuildConfig:
+    """One audio.cpp build configuration (mirrors the definition's build catalog).
+
+    Field names are the catalog ``field`` names, so stored settings,
+    ``cmake_arguments`` and this dataclass stay one shape. ``backend`` is
+    derived, never user-selected.
+    """
+
     backend: str = "cpu"
     build_type: str = "RelWithDebInfo"
     cuda: bool = False
+    hip: bool = False
+    vulkan: bool = False
+    webgpu: bool = False
+    sycl: bool = False
+    metal: bool = False
+    cuda_graphs: bool = True
+    hip_strix_halo: bool = False
     native_cpu: bool = True
     openmp: bool = True
-    cuda_graphs: bool = True
     llamafile: bool = True
     cpu_all_variants: bool = False
+    neon: bool = False
+    rknn: bool = False
     build_tests: bool = False
     build_extended_tests: bool = False
     build_model_tests: bool = False
@@ -55,10 +70,15 @@ class AudioCppBuildConfig:
     native_model_manager: bool = False
     use_system_openssl: bool = False
     build_server_frontends: bool = False
+    server_frontend_modules: str = ""
+    server_frontends_dir: str = "external/audio.cpp-server-frontends"
     build_c_api: bool = False
+    c_api_static: bool = False
     static_espeak: bool = False
     model_set: str = "full"
     models: str = ""
+    zonos3_textnorm: bool = False
+    zonos3_textnorm_dir: str = ""
     jobs: int = 0
     custom_cmake_args: str = ""
     cflags: str = ""
@@ -74,7 +94,6 @@ class AudioCppBuildConfig:
         if self.build_type not in {"Debug", "Release", "RelWithDebInfo", "MinSizeRel"}:
             self.build_type = "RelWithDebInfo"
         self.jobs = max(0, int(self.jobs or 0))
-        self.backend = "cuda" if self.cuda else "cpu"
         return self
 
 
@@ -187,21 +206,33 @@ class AudioCppManager:
 
     @staticmethod
     def supported_build_backends() -> List[str]:
-        return ["cpu", "cuda"]
+        """Backends Studio can build, launch and ship for audio.cpp."""
+        from backend.engines.audio_cpp.build_options import supported_backends
+
+        return list(supported_backends())
 
     @classmethod
     def validate_build_config(cls, config: AudioCppBuildConfig) -> None:
+        """Raise ``ValueError`` when this configuration cannot be built by Studio.
+
+        One validation surface for both the build paths and the settings save:
+        catalogued-but-unsupported knobs are refused (so the derived backend
+        stays inside the supported set) and the option combination must satisfy
+        upstream's configure-time guards.
+        """
+        from backend.engines.audio_cpp.build_options import validate_build_settings
+
         config = config.normalized()
-        if config.backend not in cls.supported_build_backends():
-            raise ValueError(
-                f"audio.cpp backend '{config.backend}' is not supported; "
-                f"supported backends: {', '.join(cls.supported_build_backends())}"
-            )
+        errors = validate_build_settings(asdict(config))
+        if errors:
+            # Preserve order, drop duplicates.
+            raise ValueError("; ".join(dict.fromkeys(errors)))
 
     def _cmake_args(
         self, source_dir: str, build_dir: str, config: AudioCppBuildConfig
     ) -> List[str]:
         from backend.build_progress import prefer_ninja_generator
+        from backend.engines.audio_cpp.build_options import cmake_arguments
 
         config = config.normalized()
         args = [
@@ -211,31 +242,10 @@ class AudioCppManager:
             "-B",
             build_dir,
             f"-DCMAKE_BUILD_TYPE={config.build_type}",
-            f"-DENGINE_ENABLE_NATIVE_CPU={'ON' if config.native_cpu else 'OFF'}",
-            f"-DENGINE_ENABLE_OPENMP={'ON' if config.openmp else 'OFF'}",
-            f"-DENGINE_ENABLE_LLAMAFILE={'ON' if config.llamafile else 'OFF'}",
-            f"-DENGINE_ENABLE_CPU_ALL_VARIANTS={'ON' if config.cpu_all_variants else 'OFF'}",
-            f"-DENGINE_BUILD_TESTS={'ON' if config.build_tests else 'OFF'}",
-            f"-DENGINE_BUILD_EXTENDED_TESTS={'ON' if config.build_extended_tests else 'OFF'}",
-            f"-DENGINE_BUILD_MODEL_TESTS={'ON' if config.build_model_tests else 'OFF'}",
-            f"-DENGINE_BUILD_EXAMPLES={'ON' if config.build_examples else 'OFF'}",
-            f"-DENGINE_BUILD_WARMBENCH={'ON' if config.build_warmbench else 'OFF'}",
-            f"-DAUDIOCPP_BUILD_C_API={'ON' if config.build_c_api else 'OFF'}",
-            f"-DAUDIOCPP_STATIC_ESPEAK={'ON' if config.static_espeak else 'OFF'}",
-            f"-DENGINE_ENABLE_CUDA={'ON' if config.cuda else 'OFF'}",
-            f"-DENGINE_ENABLE_HIP=OFF",
-            f"-DENGINE_ENABLE_VULKAN=OFF",
-            f"-DENGINE_ENABLE_METAL=OFF",
-            f"-DENGINE_ENABLE_CUDA_GRAPHS={'ON' if config.cuda and config.cuda_graphs else 'OFF'}",
-            f"-DENGINE_HIP_STRIX_HALO_OPTIMIZATIONS=OFF",
-            f"-DAUDIOCPP_DEPLOYMENT_BUILD={'ON' if config.deployment_build else 'OFF'}",
-            f"-DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER={'ON' if config.native_model_manager else 'OFF'}",
-            f"-DAUDIOCPP_USE_SYSTEM_OPENSSL={'ON' if config.use_system_openssl else 'OFF'}",
-            f"-DAUDIOCPP_BUILD_SERVER_FRONTENDS={'ON' if config.build_server_frontends else 'OFF'}",
-            f"-DAUDIOCPP_MODEL_SET={config.model_set or 'full'}",
         ]
-        if (config.model_set or "") == "custom" and str(config.models or "").strip():
-            args.append(f"-DAUDIOCPP_MODELS={str(config.models).strip()}")
+        # Every catalog option is passed explicitly, so the build never
+        # inherits an upstream default (or a fork's changed default).
+        args.extend(cmake_arguments(asdict(config)))
         if config.custom_cmake_args:
             args.extend(shlex.split(config.custom_cmake_args))
         from backend.engines.build_workspace import origin_cmake_args
@@ -294,6 +304,25 @@ class AudioCppManager:
                     str(arg).startswith("-DCMAKE_CUDA_COMPILER=") for arg in cmake_args
                 ):
                     cmake_args.append(f"-DCMAKE_CUDA_COMPILER={nvcc}")
+                from backend.cuda_host_compiler import select_cuda_host_compiler
+
+                host_gxx = select_cuda_host_compiler(cuda_root)
+                if host_gxx:
+                    env["CUDAHOSTCXX"] = host_gxx
+                    if not any(
+                        str(arg).startswith("-DCMAKE_CUDA_HOST_COMPILER=") for arg in cmake_args
+                    ):
+                        cmake_args.append(f"-DCMAKE_CUDA_HOST_COMPILER={host_gxx}")
+                from backend.cuda_glibc_compat import (
+                    cuda_c23_shim_flag,
+                    needs_cuda_c23_shim,
+                )
+                from backend.cuda_host_compiler import cuda_toolkit_version
+
+                if needs_cuda_c23_shim(cuda_version=cuda_toolkit_version(cuda_root)) and not any(
+                    str(arg).startswith("-DCMAKE_CUDA_FLAGS=") for arg in cmake_args
+                ):
+                    cmake_args.append(f"-DCMAKE_CUDA_FLAGS={cuda_c23_shim_flag(cuda_root)}")
 
             host = await detect_host_target()
             cmake_args = cmake_args_for_host_cuda(cmake_args, host.sms)
@@ -314,7 +343,27 @@ class AudioCppManager:
         return cmake_args, env
 
     @staticmethod
-    def _build_argv(build_dir: str, config: AudioCppBuildConfig) -> List[str]:
+    def build_job_count(config: AudioCppBuildConfig) -> int:
+        """Parallel compile jobs for this configuration on this host.
+
+        Always a number: CMake forwards ``--parallel`` without one to the
+        generator, and Ninja then uses every CPU it can see (cores + 2), even
+        inside a container with a CPU quota. A full audio.cpp CUDA build is
+        the heaviest compile Studio starts, so an unbounded job count turns
+        the host into a swapping box where the API, the proxy and every SSE
+        stream stop answering until the build ends.
+        """
+        if config.jobs:
+            return max(1, int(config.jobs))
+        from backend.concurrency import KIB_PER_GIB, build_job_budget
+
+        # nvcc compiling two architecture variants at once is far heavier per
+        # job than a host C++ compile; budget accordingly.
+        per_job = 8 * KIB_PER_GIB if config.cuda else 4 * KIB_PER_GIB
+        return build_job_budget(per_job_kib=per_job)
+
+    @classmethod
+    def _build_argv(cls, build_dir: str, config: AudioCppBuildConfig) -> List[str]:
         build_argv = [
             "cmake",
             "--build",
@@ -322,10 +371,11 @@ class AudioCppManager:
             "--config",
             config.build_type,
             "--parallel",
+            str(cls.build_job_count(config)),
+            "--target",
+            "audiocpp_cli",
+            "audiocpp_server",
         ]
-        if config.jobs:
-            build_argv.append(str(config.jobs))
-        build_argv.extend(["--target", "audiocpp_cli", "audiocpp_server"])
         return build_argv
 
     def _local_src_dir(self) -> str:

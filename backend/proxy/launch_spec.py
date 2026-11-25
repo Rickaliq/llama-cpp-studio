@@ -28,7 +28,7 @@ _SECRET_NAME_RE = re.compile(
 _STUDIO_PREFIX = "LLAMA_STUDIO_"
 # SGLang SM70 forks whose runtime accepts numeric CUDA ids only and expects the
 # current allocator-conf spelling.
-_SM70_SGLANG_ENGINES = frozenset({"sglang_v100", "sglang_sxm2", "sglang_sm70"})
+_SM70_SGLANG_ENGINES = frozenset({"sglang_v100", "sglang_sxm2"})
 _COMPOSITIONAL_KEYS = frozenset({"PATH", "LD_LIBRARY_PATH"})
 _BASELINE_KEYS = (
     "HOME",
@@ -129,6 +129,59 @@ class LaunchSpec:
             "health_requires_loaded": self.health_requires_loaded,
         }
 
+    @classmethod
+    def from_document(cls, document: Mapping[str, Any]) -> "LaunchSpec":
+        """Rebuild the launch selected by a published manifest.
+
+        Process creation must use the generation the user published, not a
+        fresh compile of the current desired configuration: an engine install
+        can activate a new version while a model is running, and that must not
+        silently replace the running process. ``artifacts`` are materialized in
+        the generation directory by the manifest store, so only the argv
+        references survive here.
+        """
+        raw = document if isinstance(document, Mapping) else {}
+        model_id = str(raw.get("model_id") or "").strip()
+        engine_id = str(raw.get("engine_id") or "").strip()
+        executable = str(raw.get("executable") or "").strip()
+        argv = raw.get("argv")
+        cwd = raw.get("cwd")
+        env = raw.get("env")
+        identities = raw.get("file_identities")
+        if not model_id:
+            raise ValueError("launch manifest has no model_id")
+        if not engine_id:
+            raise ValueError("launch manifest has no engine_id")
+        if not executable:
+            raise ValueError("launch manifest has no executable")
+        if not isinstance(argv, list):
+            raise ValueError("launch manifest argv must be a list")
+        if cwd is not None and not isinstance(cwd, str):
+            raise ValueError("launch manifest cwd must be a string or null")
+        if env is not None and not isinstance(env, Mapping):
+            raise ValueError("launch manifest env must be a mapping")
+        env_set = (env or {}).get("set")
+        env_unset = (env or {}).get("unset")
+        if env_set is not None and not isinstance(env_set, Mapping):
+            raise ValueError("launch manifest env.set must be a mapping")
+        if env_unset is not None and not isinstance(env_unset, list):
+            raise ValueError("launch manifest env.unset must be a list")
+        if identities is not None and not isinstance(identities, Mapping):
+            raise ValueError("launch manifest file_identities must be a mapping")
+        return cls(
+            model_id=model_id,
+            engine_id=engine_id,
+            engine_install_id=str(raw.get("engine_install_id") or ""),
+            executable=executable,
+            argv=list(argv),
+            cwd=cwd,
+            env=EnvSpec(
+                set={str(key): str(value) for key, value in (env_set or {}).items()},
+                unset=[str(name) for name in (env_unset or [])],
+            ),
+            file_identities={str(key): dict(value) for key, value in (identities or {}).items()},
+        )
+
 
 @dataclass
 class ProxyModelSpec:
@@ -212,6 +265,25 @@ def redact_env_value(name: str, value: str) -> str:
 
 def redact_env_map(values: Mapping[str, str]) -> Dict[str, str]:
     return {key: redact_env_value(key, value) for key, value in values.items()}
+
+
+def launch_device_selection(spec: "LaunchSpec") -> Optional[Tuple[str, ...]]:
+    """CUDA device selection of a compiled launch, or ``None`` for CPU mode.
+
+    Reads the launch's existing environment contract so proxy admission does not
+    re-interpret ``CUDA_VISIBLE_DEVICES`` itself. ``("all",)`` marks an inherit
+    launch that pins no narrower selection than its parent process; otherwise
+    the tuple holds the selected numeric ids or UUIDs in launch order.
+    """
+    if "CUDA_VISIBLE_DEVICES" in spec.env.unset:
+        return None
+    raw = str(spec.env.set.get("CUDA_VISIBLE_DEVICES") or "").strip()
+    if not raw or raw.lower() == "all":
+        return ("all",)
+    tokens = tuple(part.strip() for part in raw.split(",") if part.strip())
+    if not tokens or tokens == ("-1",):
+        return None
+    return tokens
 
 
 def format_argv(executable: str, argv: Sequence[ArgvItem]) -> str:
@@ -616,6 +688,19 @@ def _compile_env(
         if key in {"CUDA_HOME", "CUDA_PATH"}:
             _validate_cuda_toolkit(value, field=key)
         merged[key] = value
+    # A managed XDG_CACHE_HOME is the catch-all for JIT caches, but HF_HOME and
+    # TORCH_HOME derive their default from it. Left alone, model WEIGHTS would
+    # land inside the version's cache tree and be deleted by a rebuild flush.
+    # Keep downloads in Studio's shared model cache unless the service/user
+    # already chose a location.
+    if "XDG_CACHE_HOME" in engine_defaults:
+        from backend.paths import studio_data_dir
+
+        model_cache_root = os.path.join(studio_data_dir(), "hf-cache")
+        for name, subdir in (("HF_HOME", ""), ("TORCH_HOME", "torch")):
+            if name in merged or name in user_unset:
+                continue
+            merged[name] = os.path.join(model_cache_root, subdir) if subdir else model_cache_root
     for key in user_unset:
         if key in _COMPOSITIONAL_KEYS:
             if required_ld and key == "LD_LIBRARY_PATH":

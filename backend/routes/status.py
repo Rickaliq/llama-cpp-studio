@@ -8,6 +8,7 @@ import os
 
 from backend.diagnostics import build_diagnostics_bundle
 from backend.inference_url import normalize_public_inference_url
+from backend.operations.attention import OperationAttentionResponse, attention_report
 from backend.proxy.client import get_proxy_client, get_proxy_port
 from backend.proxy.runtime_observation import runtime_observation_report
 from backend.ops_metrics import snapshot_metrics
@@ -23,6 +24,18 @@ async def operation_recovery():
     from backend.operations.supervisor import get_supervisor
 
     return get_supervisor().recovery_status()
+
+
+@router.get("/operations/attention", response_model=OperationAttentionResponse)
+async def operation_attention():
+    """List interrupted and unknown operations and only their supported actions.
+
+    Read-only: it reads the durable rows, never replays, confirms, or dismisses
+    work, and leaves the admission fences exactly as reconciliation stored them.
+    """
+    from backend.data_store import get_store
+
+    return attention_report(get_store().list_operations())
 
 
 @router.post("/operations/reconcile")
@@ -91,15 +104,18 @@ async def operation_task_logs(task_id: str, limit: int = 0):
     from backend.operations.progress import get_progress_manager
 
     manager = get_progress_manager()
-    lines = manager.get_task_logs(task_id)
-    if manager.get_task(task_id) is None and not lines:
+    task = manager.get_task(task_id)
+    retained = manager.get_task_logs(task_id)
+    if task is None and not retained:
         raise HTTPException(status_code=404, detail="Task is not retained")
-    if limit > 0:
-        lines = lines[-min(limit, 100_000) :]
+    lines = retained[-min(limit, 100_000) :] if limit > 0 else retained
     return {
         "task_id": task_id,
         "lines": lines,
-        "log_count": len(manager.get_task_logs(task_id)),
+        "log_count": len(retained),
+        # The same task detail the SSE payloads carry, including build
+        # provenance (for builds: which CUDA toolkit the build resolved).
+        "metadata": dict((task or {}).get("metadata") or {}),
     }
 
 

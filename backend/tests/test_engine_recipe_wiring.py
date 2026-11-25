@@ -13,8 +13,6 @@ import pytest
 
 from backend.engines.definitions import load_default_engine_definitions, materialize_plan
 
-RECIPES = ("release", "source", "sync", "remove", "remove_version", "build")  # fallback only
-
 
 def _definitions():
     registry = load_default_engine_definitions()
@@ -26,11 +24,7 @@ def _plans():
     for engine_id, definition in _definitions():
         if definition is None:
             continue
-        recipe_names = (
-            [name for name, _steps in definition.recipes]
-            if getattr(definition, "recipes", None)
-            else list(RECIPES)
-        )
+        recipe_names = [name for name, _steps in definition.recipes]
         for recipe in recipe_names:
             try:
                 plan = materialize_plan(definition, recipe)

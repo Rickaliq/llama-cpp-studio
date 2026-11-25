@@ -2,7 +2,8 @@
 export function onRovingTabKeydown(event) {
   const key = event.key
   if (!['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp', 'Home', 'End'].includes(key)) return
-  const tablist = event.currentTarget?.closest?.('[role="tablist"]') || event.currentTarget?.parentElement
+  const tablist =
+    event.currentTarget?.closest?.('[role="tablist"]') || event.currentTarget?.parentElement
   if (!tablist) return
   const tabs = [...tablist.querySelectorAll('[role="tab"]:not([disabled])')]
   const index = tabs.indexOf(event.currentTarget)
@@ -15,5 +16,8 @@ export function onRovingTabKeydown(event) {
   event.preventDefault()
   const target = tabs[next]
   target.focus()
+  // A scrolling tab strip keeps the newly focused tab fully inside its own
+  // scrollport; native focus scrolling can leave the edge clipped.
+  target.scrollIntoView?.({ block: 'nearest', inline: 'center' })
   target.click()
 }

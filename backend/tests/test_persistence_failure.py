@@ -292,6 +292,25 @@ def test_a_queued_operation_write_failure_is_not_a_successful_response(tmp_path,
     assert store.list_operations()[0]["status"] == "running"
 
 
+def test_the_response_gate_wraps_the_router_without_a_task_boundary():
+    """Queued writes must stay attributable to the task that serves the request.
+
+    ``StoreIoMiddleware`` only tracks writes made by the request task. A
+    ``BaseHTTPMiddleware`` placed inside it runs the endpoint in a child task,
+    so the response would no longer wait for its own queued operation rows.
+    """
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    from backend.main import app
+    from backend.store_io import StoreIoMiddleware
+
+    # ``user_middleware`` is ordered outermost first.
+    classes = [entry.cls for entry in app.user_middleware]
+    gate_index = classes.index(StoreIoMiddleware)
+    for inner in classes[gate_index + 1 :]:
+        assert not issubclass(inner, BaseHTTPMiddleware), inner
+
+
 @pytest.mark.parametrize(
     "checkpoint,phase",
     [
@@ -367,10 +386,7 @@ def test_acknowledged_settings_save_survives_a_new_process(client):
     )
     assert response.status_code == 200
     assert response.json()["public_inference_url"] == "http://kept.example"
-    assert (
-        _fresh_settings(get_store()._config_dir)["public_inference_url"]
-        == "http://kept.example"
-    )
+    assert _fresh_settings(get_store()._config_dir)["public_inference_url"] == "http://kept.example"
 
 
 def test_killing_the_first_settings_write_does_not_leave_a_truncated_document(tmp_path):
@@ -444,9 +460,7 @@ def test_liveness_stays_available_while_a_settings_write_is_blocked(client):
             assert release.wait(timeout=5)
 
     set_write_checkpoint(block)
-    writer = threading.Thread(
-        target=lambda: get_store().update_settings({"marker": "blocked"})
-    )
+    writer = threading.Thread(target=lambda: get_store().update_settings({"marker": "blocked"}))
     writer.start()
     assert started.wait(timeout=2)
     try:
@@ -494,16 +508,8 @@ def _operation_until_killed(data_dir: str, mode: str, connection) -> None:
         hits[name] += 1
         pause = (
             (mode == "after_running" and name == "after_replace" and hits[name] == 1)
-            or (
-                mode == "before_terminal_replace"
-                and name == "before_replace"
-                and hits[name] == 2
-            )
-            or (
-                mode == "after_terminal_replace"
-                and name == "after_replace"
-                and hits[name] == 2
-            )
+            or (mode == "before_terminal_replace" and name == "before_replace" and hits[name] == 2)
+            or (mode == "after_terminal_replace" and name == "after_replace" and hits[name] == 2)
         )
         if not pause:
             return
@@ -602,14 +608,14 @@ def test_restart_reconciles_a_killed_operation_without_replaying_it(
         assert "not run again" in rows[0]["message"]
         assert result["unknown"] == 1
     if mode == "during_execution":
-        assert (tmp_path / "data" / "config" / "work-started").read_text(encoding="utf-8") == "started\n"
+        assert (tmp_path / "data" / "config" / "work-started").read_text(
+            encoding="utf-8"
+        ) == "started\n"
     if mode == "after_running":
         assert not (tmp_path / "data" / "config" / "work-started").exists()
 
 
-def test_failed_reconciliation_leaves_the_durable_row_and_reports_unknown(
-    tmp_path, monkeypatch
-):
+def test_failed_reconciliation_leaves_the_durable_row_and_reports_unknown(tmp_path, monkeypatch):
     from backend import data_store
     from backend.operations.supervisor import OperationSupervisor
 
@@ -651,10 +657,12 @@ def test_reconcile_api_reports_an_uncertain_outcome(client):
     assert body["committed"] == "unknown"
     assert body["outcome"] == "unknown"
     assert "Refresh" in body["detail"]
-    assert next(
-        row for row in get_store().list_operations()
-        if row.get("operation_id") == "op-open"
-    )["status"] == "running"
+    assert (
+        next(row for row in get_store().list_operations() if row.get("operation_id") == "op-open")[
+            "status"
+        ]
+        == "running"
+    )
     recovery = client.get("/api/operations/recovery")
     assert recovery.status_code == 200
     assert recovery.json()["outcome"] == "unknown"

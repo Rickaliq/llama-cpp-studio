@@ -34,6 +34,7 @@ from backend.task_cancel_registry import TaskCancelledError
 from backend.build_task_manager import BuildTaskManager
 from backend.concurrency import run_blocking
 from backend.gpu_detector import detect_build_capabilities
+from backend.cuda_errors import CudaInstallerError
 from backend.cuda_installer import get_cuda_installer
 from backend.proxy.control import mark_runtime_changed
 from backend.operations.action_recovery import (
@@ -234,7 +235,6 @@ def _list_llama_versions_payload():
         ("sglang", "SGLang", "pip"),
         ("sglang_v100", "SGLang-V100", "source"),
         ("sglang_sxm2", "SGLang-SXM2", "source"),
-        ("sglang_sm70", "SGLang-SM70", "source"),
         ("vllm", "vLLM", "pip"),
     ]:
         active_venv = store.get_active_engine_version(engine)
@@ -247,26 +247,10 @@ def _list_llama_versions_payload():
             )
     active_audio = store.get_active_engine_version("audio_cpp")
     active_audio_version = active_audio.get("version") if active_audio else None
+    from backend.routes.audio_cpp_versions import audio_version_list_row
+
     for v in store.get_engine_versions("audio_cpp"):
-        annotated = annotate_version_row("audio_cpp", v)
-        result.append(
-            {
-                **annotated,
-                "id": f"audio_cpp:{annotated.get('version')}",
-                "version": annotated.get("version"),
-                "type": annotated.get("type", "source"),
-                "install_type": annotated.get("install_type")
-                or (
-                    "source"
-                    if annotated.get("type") in {"fork", "patched", "source"}
-                    else annotated.get("type", "source")
-                ),
-                "is_fork": bool(annotated.get("is_fork")) or annotated.get("type") == "fork",
-                "is_active": annotated.get("version") == active_audio_version,
-                "repository_source": "audio.cpp",
-                "cmake_editable": True,
-            }
-        )
+        result.append(audio_version_list_row("audio_cpp", v, active_audio_version))
     # Definition-registered engines beyond the hardcoded set above (YAML-only
     # engines) must surface their installed versions too; otherwise the frontend
     # cards show nothing after a successful install.
@@ -279,7 +263,6 @@ def _list_llama_versions_payload():
         "sglang",
         "sglang_v100",
         "sglang_sxm2",
-        "sglang_sm70",
         "vllm",
         "audio_cpp",
     }
@@ -1946,8 +1929,10 @@ async def get_cuda_status():
     """Get CUDA installation status"""
     try:
         installer = get_cuda_installer()
+        available_versions = await installer.get_available_versions()
         # Toolkit/library detection runs subprocesses and scans install trees.
         status = await run_blocking(installer.status)
+        status["available_versions"] = available_versions
         return status
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -1968,12 +1953,6 @@ async def install_cuda(request: dict):
         install_tensorrt = request.get("install_tensorrt", False)
         installer = get_cuda_installer()
 
-        if installer.is_operation_running():
-            raise HTTPException(
-                status_code=400,
-                detail="A CUDA installation operation is already running",
-            )
-
         result = await installer.install(
             version=version,
             install_cudnn=install_cudnn,
@@ -1982,6 +1961,8 @@ async def install_cuda(request: dict):
         return result
     except ActionAdmissionError as e:
         raise HTTPException(status_code=409, detail=e.detail) from e
+    except CudaInstallerError as e:
+        raise HTTPException(status_code=e.http_status, detail=e.to_detail()) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
@@ -2001,18 +1982,29 @@ async def get_cuda_logs():
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+@router.post("/cuda-activate")
+async def activate_cuda(request: dict):
+    """Activate an already-installed CUDA Toolkit version."""
+    try:
+        installer = get_cuda_installer()
+        result = await installer.activate(request.get("version", ""))
+        return result
+    except CudaInstallerError as e:
+        raise HTTPException(status_code=e.http_status, detail=e.to_detail()) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 @router.post("/cuda-uninstall")
 async def uninstall_cuda(request: dict):
     """Uninstall CUDA Toolkit"""
     try:
         version = request.get("version")  # Optional - if not provided, uninstalls current
         installer = get_cuda_installer()
-
-        if installer.is_operation_running():
-            raise HTTPException(
-                status_code=400,
-                detail="A CUDA installation operation is already running",
-            )
 
         result = await installer.uninstall(version)
         return result
@@ -2023,10 +2015,24 @@ async def uninstall_cuda(request: dict):
             status_code=409,
             detail={"code": "ACTION_IN_FLIGHT", "message": str(e)},
         ) from e
+    except CudaInstallerError as e:
+        raise HTTPException(status_code=e.http_status, detail=e.to_detail()) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/cuda-cleanup")
+async def cleanup_cuda_installers():
+    """Delete cached CUDA installer downloads (installed toolkits are kept)."""
+    try:
+        installer = get_cuda_installer()
+        return await installer.cleanup_installers()
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 

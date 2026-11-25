@@ -190,9 +190,11 @@ describe('EnginesView per-build CMake editor', () => {
     await wrapper.get('[data-testid="edit-config-btn"]').trigger('click')
     await flushPromises()
 
-    const cmakeDialog = wrapper.findAll('.dialog-stub').find((node) =>
-      String(node.attributes('data-header') || '').includes('CMake settings — llama.cpp'),
-    )
+    const cmakeDialog = wrapper
+      .findAll('.dialog-stub')
+      .find((node) =>
+        String(node.attributes('data-header') || '').includes('CMake settings — llama.cpp'),
+      )
     expect(cmakeDialog).toBeTruthy()
     expect(cmakeDialog.text()).toContain('source-main')
     expect(cmakeDialog.text()).toContain('frozen to')
@@ -211,9 +213,9 @@ describe('EnginesView per-build CMake editor', () => {
     await wrapper.get('[data-testid="edit-config-btn"]').trigger('click')
     await flushPromises()
 
-    const cmakeDialog = wrapper.findAll('.dialog-stub').find((node) =>
-      String(node.attributes('data-header') || '').includes('CMake settings'),
-    )
+    const cmakeDialog = wrapper
+      .findAll('.dialog-stub')
+      .find((node) => String(node.attributes('data-header') || '').includes('CMake settings'))
     const save = cmakeDialog.findAll('button').find((btn) => btn.text() === 'Save')
     await save.trigger('click')
     await flushPromises()
@@ -235,9 +237,9 @@ describe('EnginesView per-build CMake editor', () => {
     await wrapper.get('[data-testid="edit-config-btn"]').trigger('click')
     await flushPromises()
 
-    const cmakeDialog = wrapper.findAll('.dialog-stub').find((node) =>
-      String(node.attributes('data-header') || '').includes('CMake settings'),
-    )
+    const cmakeDialog = wrapper
+      .findAll('.dialog-stub')
+      .find((node) => String(node.attributes('data-header') || '').includes('CMake settings'))
     const rebuild = cmakeDialog.findAll('button').find((btn) => btn.text() === 'Save & rebuild')
     await rebuild.trigger('click')
     await flushPromises()
@@ -268,9 +270,9 @@ describe('EnginesView per-build CMake editor', () => {
     await wrapper.get('[data-testid="edit-config-btn"]').trigger('click')
     await flushPromises()
 
-    const cmakeDialog = wrapper.findAll('.dialog-stub').find((node) =>
-      String(node.attributes('data-header') || '').includes('CMake settings'),
-    )
+    const cmakeDialog = wrapper
+      .findAll('.dialog-stub')
+      .find((node) => String(node.attributes('data-header') || '').includes('CMake settings'))
     const labels = cmakeDialog.findAll('button').map((btn) => btn.text())
     expect(labels).toContain('Save & retry')
     expect(labels).not.toContain('Save & rebuild')
@@ -278,10 +280,7 @@ describe('EnginesView per-build CMake editor', () => {
     await retry.trigger('click')
     await flushPromises()
 
-    expect(saveVersionBuildConfig).toHaveBeenCalledWith(
-      'llama_cpp:source-fail',
-      expect.any(Object),
-    )
+    expect(saveVersionBuildConfig).toHaveBeenCalledWith('llama_cpp:source-fail', expect.any(Object))
     expect(retryVersion).toHaveBeenCalledWith('llama_cpp:source-fail')
     expect(syncVersion).not.toHaveBeenCalled()
   })
@@ -289,15 +288,19 @@ describe('EnginesView per-build CMake editor', () => {
   it('opens frozen audio.cpp cmake settings from the audio engine modal', async () => {
     const wrapper = mountEnginesView()
     await flushPromises()
-    const audioCard = wrapper.findAll('.engine-card').find((card) => card.text().includes('audio.cpp'))
+    const audioCard = wrapper
+      .findAll('.engine-card')
+      .find((card) => card.text().includes('audio.cpp'))
     await audioCard.trigger('click')
     await flushPromises()
     await wrapper.get('[data-testid="edit-config-btn"]').trigger('click')
     await flushPromises()
 
-    const cmakeDialog = wrapper.findAll('.dialog-stub').find((node) =>
-      String(node.attributes('data-header') || '').includes('CMake settings — audio.cpp'),
-    )
+    const cmakeDialog = wrapper
+      .findAll('.dialog-stub')
+      .find((node) =>
+        String(node.attributes('data-header') || '').includes('CMake settings — audio.cpp'),
+      )
     expect(cmakeDialog).toBeTruthy()
     expect(cmakeDialog.text()).not.toContain('Repo URL')
     expect(cmakeDialog.text()).not.toContain('Build Name Suffix')
@@ -309,17 +312,53 @@ describe('EnginesView per-build CMake editor', () => {
       expect.objectContaining({ backend: 'cpu' }),
     )
   })
-})
-
-describe('EnginesView build dialog theming', () => {
-  it('uses app theme tokens instead of PrimeVue surface grays', () => {
+  it('reads audio.cpp build defaults from the generated catalog export', () => {
+    // Guards against a hand-copied fallback literal drifting from the backend
+    // catalog (scripts/export-build-defaults.py is the only writer).
     const src = readFileSync(
       resolve(dirname(fileURLToPath(import.meta.url)), './EnginesView.vue'),
       'utf8',
     )
-    expect(src).toContain('background: var(--bg-tertiary)')
-    expect(src).toContain('background: var(--status-info-soft)')
-    expect(src).not.toMatch(/var\(--surface-50/)
-    expect(src).not.toMatch(/background: var\(--surface-100\)/)
+    expect(src).toContain('FALLBACK_AUDIO_BUILD_DEFAULTS')
+    expect(src).toContain('FALLBACK_AUDIO_BUILD_TYPES')
+    expect(src).not.toContain('AUDIO_FALLBACK_DEFAULTS')
+    expect(src).toContain('Studio ships audio.cpp builds for')
+  })
+})
+
+describe('EnginesView build dialog theming', () => {
+  // The page used to own the engine card/banner chrome; that now lives in the
+  // engine components, and every surface must stay on app theme tokens.
+  const SOURCES = {
+    view: resolve(dirname(fileURLToPath(import.meta.url)), './EnginesView.vue'),
+    card: resolve(dirname(fileURLToPath(import.meta.url)), '../components/engines/EngineCard.vue'),
+    updateBanner: resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      '../components/system/EngineUpdateBanner.vue',
+    ),
+  }
+
+  function source(key) {
+    return readFileSync(SOURCES[key], 'utf8')
+  }
+
+  it('uses app theme tokens instead of PrimeVue surface grays', () => {
+    for (const key of Object.keys(SOURCES)) {
+      const src = source(key)
+      expect(src, key).not.toMatch(/var\(--surface-/)
+      expect(src, key).not.toMatch(/background: var\(--gray-/)
+    }
+    expect(source('card')).toContain('background: var(--bg-card)')
+    expect(source('updateBanner')).toContain('severity="warning"')
+  })
+
+  it('leaves page-level chrome to the shared section primitives', () => {
+    const src = source('view')
+    expect(src).toContain('<PageSection')
+    expect(src).toContain('<LoadingState')
+    expect(src).toContain('<EmptyState')
+    expect(src).toContain('<StateBanner')
+    // No page-local section lookalike may come back.
+    expect(src).not.toContain('ev-section')
   })
 })

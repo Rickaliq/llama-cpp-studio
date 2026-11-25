@@ -7,6 +7,7 @@ import ModelConfig from './ModelConfig.vue'
 
 const toastAdd = vi.fn()
 const fetchModels = vi.fn()
+const startModel = vi.fn()
 const fetchRuntimePlanState = vi.fn()
 const fetchGpuList = vi.fn()
 const invalidateRuntimePlan = vi.fn()
@@ -25,6 +26,7 @@ vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { id: 'model-1' } }),
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   onBeforeRouteLeave: () => {},
+  RouterLink: { props: ['to'], template: '<a><slot /></a>' },
 }))
 
 vi.mock('primevue/usetoast', () => ({
@@ -130,6 +132,7 @@ vi.mock('@/stores/models', () => ({
     ],
     allQuantizations: [],
     fetchModels,
+    startModel,
   }),
 }))
 
@@ -149,11 +152,15 @@ vi.mock('@/stores/engines', () => ({
 }))
 
 import axios from 'axios'
+import { ENGINE_DESCRIPTORS } from '@/engines/registry'
+
+const [PRIMARY_ENGINE_ID, SECONDARY_ENGINE_ID] = Object.keys(ENGINE_DESCRIPTORS)
 
 const buttonStub = {
-  props: ['label', 'icon', 'text', 'severity', 'loading', 'outlined', 'rounded'],
+  props: ['label', 'icon', 'text', 'severity', 'loading', 'outlined', 'rounded', 'disabled'],
   emits: ['click'],
-  template: '<button :data-label="label" @click="$emit(`click`)">{{ label }}</button>',
+  template:
+    '<button :data-label="label" :disabled="disabled" @click="!disabled && $emit(`click`)">{{ label }}</button>',
 }
 
 const textInputStub = {
@@ -253,6 +260,8 @@ describe('ModelConfig', () => {
     delete engineRuntime.runtimePlan.launch_manifests
     toastAdd.mockReset()
     fetchModels.mockReset()
+    startModel.mockReset()
+    startModel.mockResolvedValue({ status: 'running' })
     fetchRuntimePlanState.mockReset()
     fetchGpuList.mockReset()
     fetchEngineDescriptors.mockReset()
@@ -840,6 +849,7 @@ describe('ModelConfig', () => {
     expect(envValues).toContain('bar')
     expect(wrapper.text()).not.toContain('2 GPUs selected')
 
+    await wrapper.get('input[placeholder="0.8"]').setValue('0.9')
     await wrapper.get('button[data-label="Save changes"]').trigger('click')
     await flushPromises()
 
@@ -1102,6 +1112,378 @@ describe('ModelConfig', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('Saved changes for this model are not published yet')
-    expect(wrapper.text()).toContain('Saved · awaiting application')
+    expect(wrapper.text()).toContain('Saved · needs apply')
+  })
+
+  it('renders the overview identity, engine selector, at-a-glance facts and review', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    const overview = wrapper.get('.config-overview')
+    expect(wrapper.find('.config-workbench').exists()).toBe(false)
+    expect(overview.text()).toContain('Test Model')
+    expect(overview.text()).toContain('org/model')
+    expect(overview.text()).toContain('GGUF')
+    expect(overview.text()).toContain('Q4_K_M')
+    expect(overview.text()).toContain('llama.cpp')
+
+    const engineGroup = overview.get('[role="radiogroup"][aria-label="Engine"]')
+    const engineRadios = engineGroup.findAll('[role="radio"]')
+    expect(engineRadios.length).toBeGreaterThan(0)
+    expect(engineRadios.some((radio) => radio.attributes('aria-checked') === 'true')).toBe(true)
+
+    expect(overview.text()).toContain('At a glance')
+    expect(overview.text()).toContain('Context window')
+    expect(overview.text()).toContain('GPU & offload')
+    expect(overview.text()).toContain('Endpoint')
+    expect(overview.text()).toContain('Apply state')
+    expect(overview.text()).toContain('Review')
+    expect(overview.text()).toContain('Ready to start')
+  })
+
+  it('switches engines from the overview identity card', async () => {
+    engineDescriptors.push(
+      {
+        id: PRIMARY_ENGINE_ID,
+        label: ENGINE_DESCRIPTORS[PRIMARY_ENGINE_ID].label,
+        enabled: true,
+        installed_versions: 1,
+        artifact_formats: ['gguf'],
+      },
+      {
+        id: SECONDARY_ENGINE_ID,
+        label: ENGINE_DESCRIPTORS[SECONDARY_ENGINE_ID].label,
+        enabled: true,
+        installed_versions: 1,
+        artifact_formats: ['gguf'],
+      },
+    )
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    const option = wrapper
+      .get('.config-overview [role="radiogroup"][aria-label="Engine"]')
+      .findAll('[role="radio"]')
+      .find((radio) => radio.text().includes(ENGINE_DESCRIPTORS[SECONDARY_ENGINE_ID].label))
+    await option.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.vm.config.engine).toBe(SECONDARY_ENGINE_ID)
+    expect(wrapper.vm.savedConfig.engine).toBe(PRIMARY_ENGINE_ID)
+    expect(axios.get).toHaveBeenCalledWith(
+      '/api/models/param-registry',
+      expect.objectContaining({
+        params: expect.objectContaining({ engine: SECONDARY_ENGINE_ID }),
+      }),
+    )
+  })
+
+  it('shows launch-plan reasons in the overview with a link to the fix section', async () => {
+    engineRuntime.runtimePlan.launch_manifests = true
+    engineRuntime.runtimePlan.models = [
+      {
+        catalog_id: 'model-1',
+        model_id: 'model-1',
+        action: 'invalid',
+        running: false,
+        reasons: ['Context size exceeds the model limit.'],
+      },
+    ]
+
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    const overview = wrapper.get('.config-overview')
+    expect(overview.text()).toContain('Configuration cannot be compiled')
+    expect(overview.text()).toContain('Context size exceeds the model limit.')
+    const openRuntime = overview
+      .findAll('button')
+      .find((button) => button.text() === 'Open Runtime')
+    expect(openRuntime).toBeDefined()
+
+    await openRuntime.trigger('click')
+    await flushPromises()
+    expect(wrapper.vm.pageTab).toBe('runtime')
+  })
+
+  it('starts the model from the action bar only when the configuration is clean', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    const startButton = () => wrapper.get('.config-action-bar button[data-label="Start model"]')
+    expect(startButton().attributes('disabled')).toBeUndefined()
+
+    await startButton().trigger('click')
+    await flushPromises()
+
+    expect(startModel).toHaveBeenCalledWith('model-1')
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: 'Model starting' }))
+  })
+
+  it('disables Start while the form is dirty and never calls the store', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    await wrapper.get('input[placeholder="0.8"]').setValue('0.9')
+    await flushPromises()
+
+    const startButton = wrapper.get('.config-action-bar button[data-label="Start model"]')
+    expect(startButton.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('Save or discard these edits before starting the model.')
+
+    await startButton.trigger('click')
+    await flushPromises()
+
+    expect(startModel).not.toHaveBeenCalled()
+    expect(
+      wrapper.get('.config-action-bar button[data-label="Save changes"]').attributes('disabled'),
+    ).toBeUndefined()
+  })
+
+  it('opens the apply flow from the action bar when saved settings need applying', async () => {
+    engineRuntime.runtimePlan.launch_manifests = true
+    engineRuntime.runtimePlan.models = [
+      { catalog_id: 'model-1', model_id: 'model-1', action: 'publish_next_start', running: false },
+    ]
+
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    const apply = wrapper.get('.config-action-bar button[data-label="Use on next start"]')
+    await apply.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.vm.applyImpactVisible).toBe(true)
+  })
+
+  it('restores only the auto-fit overrides in the draft without saving', async () => {
+    const engineId = PRIMARY_ENGINE_ID
+    const autoFitRegistry = {
+      sections: [
+        {
+          id: 'performance',
+          label: 'Performance',
+          params: [
+            {
+              key: 'fit',
+              label: 'Auto-fit',
+              type: 'select',
+              value_kind: 'enum',
+              default: 'on',
+              primary_flag: '--fit',
+              flags: ['--fit'],
+              options: [
+                { value: 'on', label: 'on' },
+                { value: 'off', label: 'off' },
+              ],
+              supported: true,
+            },
+            {
+              key: 'fit_ctx',
+              label: 'Fit context',
+              type: 'int',
+              value_kind: 'scalar',
+              default: 4096,
+              primary_flag: '--fit-ctx',
+              flags: ['--fit-ctx'],
+              supported: true,
+            },
+            {
+              key: 'fit_target',
+              label: 'Fit target',
+              type: 'int',
+              value_kind: 'scalar',
+              default: 1024,
+              primary_flag: '--fit-target',
+              flags: ['--fit-target'],
+              supported: true,
+            },
+            {
+              key: 'ctx_size',
+              label: 'Context Size',
+              type: 'int',
+              value_kind: 'scalar',
+              default: 0,
+              primary_flag: '--ctx-size',
+              flags: ['--ctx-size'],
+              supported: true,
+            },
+            {
+              key: 'n_gpu_layers',
+              label: 'GPU Layers',
+              type: 'int',
+              value_kind: 'scalar',
+              default: 'auto',
+              primary_flag: '--n-gpu-layers',
+              flags: ['--gpu-layers', '--n-gpu-layers'],
+              supported: true,
+            },
+            {
+              key: 'flash_attn',
+              label: 'Flash Attention',
+              type: 'select',
+              value_kind: 'enum',
+              default: 'auto',
+              options: [
+                { value: 'on', label: 'on' },
+                { value: 'off', label: 'off' },
+                { value: 'auto', label: 'auto' },
+              ],
+              supported: true,
+            },
+            {
+              key: 'threads',
+              label: 'Threads',
+              type: 'int',
+              value_kind: 'scalar',
+              default: -1,
+              supported: true,
+            },
+            {
+              key: 'batch_size',
+              label: 'Batch Size',
+              type: 'int',
+              value_kind: 'scalar',
+              default: 2048,
+              supported: true,
+            },
+            {
+              key: 'parallel',
+              label: 'Parallel',
+              type: 'int',
+              value_kind: 'scalar',
+              default: -1,
+              supported: true,
+            },
+          ],
+        },
+      ],
+    }
+    const baseGet = vi.mocked(axios.get).getMockImplementation()
+    vi.mocked(axios.get).mockImplementation((url, config) => {
+      if (url === '/api/models/model-1/config') {
+        return Promise.resolve({
+          data: {
+            engine: engineId,
+            engines: {
+              [engineId]: {
+                fit: 'off',
+                ctx_size: 8192,
+                n_gpu_layers: 32,
+                threads: 8,
+                batch_size: 512,
+                parallel: 2,
+              },
+            },
+          },
+        })
+      }
+      if (url === '/api/models/param-registry') {
+        return Promise.resolve({ data: autoFitRegistry })
+      }
+      return baseGet(url, config)
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    expect(wrapper.vm.autoFitState.supported).toBe(true)
+    expect(wrapper.vm.autoFitState.overrides.map((row) => row.key)).toEqual([
+      'fit',
+      'ctx_size',
+      'n_gpu_layers',
+    ])
+    const card = wrapper.get('[data-auto-fit]')
+    expect(card.text()).toContain('Auto-fit is overridden')
+    expect(card.findAll('[data-auto-fit-key]')).toHaveLength(3)
+    expect(card.text()).not.toMatch(/VRAM|GiB|recommended for this machine/i)
+    expect(wrapper.find('[data-auto-fit-action]').exists()).toBe(true)
+
+    await card.get('[data-auto-fit-review]').trigger('click')
+    await flushPromises()
+    expect(wrapper.vm.pageTab).toBe('runtime')
+
+    await card.get('[data-auto-fit-restore]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.vm.config.fit).toBe('on')
+    expect(wrapper.vm.config.ctx_size).toBe(0)
+    expect(wrapper.vm.config).not.toHaveProperty('n_gpu_layers')
+    // Auto-fit restoration must not touch unrelated parameters.
+    expect(wrapper.vm.config.threads).toBe(8)
+    expect(wrapper.vm.config.batch_size).toBe(512)
+    expect(wrapper.vm.config.parallel).toBe(2)
+
+    expect(axios.put).not.toHaveBeenCalled()
+    expect(toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({ summary: 'Auto settings restored' }),
+    )
+    expect(wrapper.vm.autoFitState.overrides).toEqual([])
+    expect(wrapper.get('[data-auto-fit]').text()).toContain('Auto-fit is active')
+    expect(wrapper.find('[data-auto-fit-action]').exists()).toBe(false)
+
+    const paramRows = wrapper.vm.configChangeGroups
+      .find((group) => group.id === 'params')
+      .rows.map((row) => row.key)
+    expect(paramRows.sort()).toEqual(['ctx_size', 'fit', 'n_gpu_layers'])
+  })
+
+  it('explains a missing engine parameter catalog and keeps saved values visible', async () => {
+    const baseGet = vi.mocked(axios.get).getMockImplementation()
+    vi.mocked(axios.get).mockImplementation((url, config) => {
+      if (url === '/api/models/param-registry') {
+        return Promise.resolve({
+          data: { sections: [], scan_error: 'engine help timed out', scan_pending: false },
+        })
+      }
+      return baseGet(url, config)
+    })
+
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+    wrapper.vm.pageTab = 'runtime'
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('No engine parameters yet')
+    expect(wrapper.text()).toContain('engine help timed out')
+    expect(wrapper.text()).toContain('Saved settings')
+    expect(wrapper.text()).toContain('Temperature')
+    expect(wrapper.find('[data-runtime-rescan]').exists()).toBe(true)
+
+    await wrapper.get('[data-runtime-rescan]').trigger('click')
+    await flushPromises()
+    expect(axios.get).toHaveBeenCalledWith(
+      '/api/models/param-registry',
+      expect.objectContaining({
+        params: expect.objectContaining({ rescan: true }),
+      }),
+    )
+  })
+
+  it('hides auto-fit when the engine scan has no fit parameter', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    expect(wrapper.vm.autoFitState.supported).toBe(false)
+    expect(wrapper.find('[data-auto-fit]').exists()).toBe(false)
+    expect(wrapper.find('[data-auto-fit-action]').exists()).toBe(false)
   })
 })

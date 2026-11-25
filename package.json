@@ -2,7 +2,9 @@
   "name": "llama-cpp-studio",
   "version": "1.0.0",
   "description": "Studio - Professional AI Model Management Platform",
+  "packageManager": "npm@11.21.0",
   "scripts": {
+    "check:runtime": "node scripts/check-runtime.mjs",
     "dev": "cd frontend && vite",
     "dev:frontend": "cd frontend && vite",
     "dev:backend": "cross-env WATCHFILES_FORCE_POLLING=true watchfiles --filter python --grace-period 0.25 --sigint-timeout 10 \"python -m uvicorn backend.main:app --host 127.0.0.1 --port 8081\" backend",
@@ -12,20 +14,23 @@
     "preview": "cd frontend && vite preview",
     "test": "npm run test:frontend && npm run test:backend",
     "test:frontend": "vitest run --config frontend/vite.config.mjs",
+    "test:frontend:coverage": "vitest run --config frontend/vite.config.mjs --coverage.enabled",
     "test:browser": "playwright test --config frontend/e2e/playwright.config.mjs",
     "test:frontend:watch": "vitest --config frontend/vite.config.mjs",
     "test:backend": "python -m pytest backend/tests -q",
+    "coverage:modules": "python scripts/check_module_coverage.py",
     "test:backend:engine": "python -m pytest -q backend/tests/test_engine_definitions_authoritative.py backend/tests/test_engine_definitions_equivalence.py backend/tests/test_engine_recipe_wiring.py backend/tests/test_yaml_engine_versions_listing.py backend/tests/test_native_support.py backend/tests/test_onecat_release_publication.py backend/tests/test_engine_definitions_executor.py backend/tests/test_engine_definitions_generic.py backend/tests/test_engine_definitions_schema.py backend/tests/test_engine_definitions_snapshots.py backend/tests/test_engine_definitions_v2.py backend/tests/test_generic_engine_router.py backend/tests/test_native_engine_lifecycle.py backend/tests/test_engine_literals_ratchet.py backend/tests/test_engine_version_removal_characterization.py backend/tests/test_engine_model_contracts.py backend/tests/test_engine_contracts.py backend/tests/test_profile_launch.py backend/tests/test_generic_installer_policy.py backend/tests/test_sglang_definition_parity.py backend/tests/test_sglang_source_contract.py backend/tests/test_lmdeploy_profile_launch_parity.py backend/tests/test_vllm_profile_launch_parity.py backend/tests/test_onecat_profile_launch_parity.py backend/tests/test_sglang_profile_launch_parity.py backend/tests/test_sglang_v100_profile_launch_parity.py backend/tests/test_engine_definition_discovery.py backend/tests/test_generic_native_installer.py backend/tests/test_generic_native_build.py backend/tests/test_engine_launch_policy.py backend/tests/test_audio_protocol_contract.py backend/tests/test_engine_upstream_declaration.py backend/tests/test_engine_settings_defaults_declaration.py backend/tests/test_engine_install_kind_capabilities.py backend/tests/test_engine_data_dirs_declaration.py backend/tests/test_engine_model_compat_declaration.py backend/tests/test_engine_descriptor_cpu_supported.py backend/tests/test_frontend_build_defaults_current.py backend/tests/test_engine_yaml_launch_defaults.py backend/tests/test_engine_build_defaults_declaration.py backend/tests/test_llama_build_catalog_declaration.py backend/tests/test_legacy_route_inventory_current.py backend/tests/test_engine_literal_caps_tight.py backend/tests/test_native_source_family_declaration.py",
     "test:backend:lf": "python -m pytest backend/tests -q --lf",
-    "lint": "npm run lint:frontend && npm run lint:python && npm run format:python:check && npm run lint:engine-literals && npm run build-defaults:check && npm run legacy-routes:check && npm run check:version",
+    "lint": "npm run lint:frontend && npm run lint:python && npm run format:python:check && npm run lint:engine-literals && npm run lint:module-size && npm run build-defaults:check && npm run legacy-routes:check && npm run check:version",
     "lint:frontend": "eslint --max-warnings=0 frontend/src frontend/e2e frontend/vitest.setup.js",
     "lint:python": "ruff check backend scripts devcontrol",
     "lint:engine-literals": "python scripts/engine-literals-ratchet.py",
+    "lint:module-size": "python scripts/module-size-ratchet.py",
     "engine-parity:check": "python scripts/parity-inventory.py --check",
-    "format:python:check": "ruff format --check backend/config_history.py backend/data_store.py backend/engines/definitions/__init__.py backend/main.py backend/engines/registry.py backend/venv_install_settings.py backend/engines/definitions/executor.py backend/engines/definitions/primitives.py backend/tests/test_engine_primitives_library.py backend/tests/test_sglang_release_plan_shadow.py backend/tests/test_vllm_legacy_plan_shadow.py backend/tests/test_sglang_source_contract.py backend/tests/test_unsloth_legacy_plan_shadow.py backend/tests/test_audio_cpp_legacy_plan_shadow.py backend/tests/test_llama_source_build_characterization.py backend/tests/test_engine_version_removal_characterization.py backend/models/engine_contracts.py backend/tests/test_engine_contracts.py backend/tests/test_generic_engine_router.py backend/tests/test_native_engine_lifecycle.py backend/routes/engine_versions.py backend/routes/engines.py backend/routes/engine_lifecycle.py backend/engines/llama_cpp/installer.py backend/engines/definitions/loader.py backend/engines/definitions/plan.py backend/engines/definitions/profiles.py backend/engines/definitions/schema.py backend/engines/definitions/startup_check.py backend/routes/benchmarks.py backend/routes/config_history.py backend/services/model_benchmark.py backend/tests/test_config_history.py backend/engines/python/generic.py backend/tests/test_engine_definitions_authoritative.py backend/tests/test_engine_definitions_equivalence.py backend/tests/test_engine_definitions_generic.py backend/proxy/profile_launch.py backend/tests/test_profile_launch.py backend/tests/test_engine_recipe_wiring.py backend/tests/test_yaml_engine_versions_listing.py backend/tests/test_native_support.py backend/tests/test_onecat_release_publication.py backend/tests/test_engine_definitions_executor.py backend/tests/test_engine_definition_discovery.py backend/tests/test_generic_installer_policy.py backend/tests/test_sglang_definition_parity.py backend/tests/test_lmdeploy_profile_launch_parity.py backend/tests/test_vllm_profile_launch_parity.py backend/tests/test_onecat_profile_launch_parity.py backend/tests/test_sglang_profile_launch_parity.py backend/tests/test_sglang_v100_profile_launch_parity.py backend/tests/test_engine_definitions_schema.py backend/tests/test_engine_definitions_snapshots.py backend/tests/test_engine_definitions_v2.py backend/tests/test_engine_literals_ratchet.py backend/tests/test_lmdeploy_legacy_plan_shadow.py backend/tests/test_vllm_release_plan_shadow.py backend/tests/test_model_benchmark.py backend/tests/test_operation_state_machine.py backend/version.py scripts/check-version.py scripts/engine-literals-ratchet.py scripts/export-openapi.py scripts/parity-inventory.py scripts/export-build-defaults.py backend/engines/python/native.py backend/engines/audio_cpp/installer.py backend/engines/audio_cpp/manager.py backend/engines/adapters.py backend/routes/audio_cpp_versions.py backend/routes/llama_versions.py backend/engines/native_build.py backend/tests/test_generic_native_installer.py backend/tests/test_generic_native_build.py backend/tests/test_audio_cpp_versions_api.py backend/tests/test_source_fork_labeling.py backend/tests/test_audio_cpp_manager.py backend/engines/llama_cpp/manager.py backend/tests/conftest.py backend/proxy/launch_spec.py backend/proxy/commands.py backend/tests/test_engine_launch_policy.py backend/engines/audio_cpp/build_options.py backend/tests/test_audio_build_options.py backend/engines/audio_cpp/inspect.py backend/engines/audio_cpp/artifact.py backend/engines/audio_cpp/request_vocab.py backend/audio/request_defaults.py backend/audio/transcription_defaults.py backend/audio/voice_presets.py backend/tests/test_audio_protocol_contract.py backend/engines/definitions/extensions.py backend/engines/audio_cpp/runtime.py backend/model_catalog/service.py backend/repo_identity.py backend/tests/test_engine_upstream_declaration.py backend/tests/test_engine_settings_defaults_declaration.py backend/tests/test_engine_install_kind_capabilities.py backend/tests/test_engine_data_dirs_declaration.py backend/tests/test_engine_model_compat_declaration.py backend/tests/test_engine_descriptor_cpu_supported.py backend/tests/test_frontend_build_defaults_current.py backend/tests/test_engine_yaml_launch_defaults.py backend/tests/test_engine_build_defaults_declaration.py backend/tests/test_llama_build_catalog_declaration.py backend/tests/test_legacy_route_inventory_current.py backend/tests/test_engine_literal_caps_tight.py backend/tests/test_native_source_family_declaration.py",
+    "format:python:check": "ruff format --check backend scripts devcontrol",
     "typecheck:api": "tsc -p frontend/tsconfig.api.json",
-    "format": "prettier --write frontend/src frontend/e2e frontend/vitest.setup.js eslint.config.mjs",
-    "format:check": "prettier --check frontend/tsconfig.api.json frontend/src/api/configuration.ts frontend/src/engines/registry.js frontend/src/stores/engines.js frontend/src/stores/engines.venv.test.js frontend/src/stores/engines.server.test.js frontend/src/stores/engines.test.js frontend/src/views/EnginesView.tasks.test.js frontend/src/composables/useTaskCancelEndpoint.js frontend/src/composables/engineVersionDelete.js frontend/src/test-fixtures/taskFixtures.js frontend/src/components/engines/GenericEnginePanel.vue frontend/src/components/engines/GenericEnginePanel.test.js frontend/src/components/system/ConfigHistoryPanel.vue frontend/src/components/system/ConfigHistoryPanel.test.js eslint.config.mjs",
+    "format": "prettier --write frontend/src frontend/e2e frontend/vitest.setup.js frontend/tsconfig.api.json eslint.config.mjs",
+    "format:check": "prettier --check frontend/src frontend/e2e frontend/vitest.setup.js frontend/tsconfig.api.json eslint.config.mjs",
     "style:check": "stylelint \"frontend/src/**/*.{css,vue}\"",
     "check:version": "python scripts/check-version.py",
     "openapi:export": "python scripts/export-openapi.py",
@@ -38,17 +43,17 @@
     "legacy-routes:check": "python scripts/legacy-route-inventory.py --check"
   },
   "dependencies": {
-    "@primeuix/themes": "^3.1.0",
+    "@primeuix/themes": "^3.1.1",
     "@vueuse/core": "^15.0.0",
-    "axios": "^1.21.0",
+    "axios": "^1.21.1",
     "pinia": "^4.1.0",
     "primeicons": "^8.0.2",
-    "primevue": "^5.0.4",
+    "primevue": "^5.0.5",
     "vue": "^3.5.45",
-    "vue-router": "^5.4.0"
+    "vue-router": "^5.5.1"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=24 <25"
   },
   "overrides": {
     "shell-quote": "1.12.0"
@@ -56,23 +61,23 @@
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
     "@eslint/js": "^10.0.1",
-    "@playwright/test": "^1.64.1",
-    "playwright-core": "1.64.1",
+    "@playwright/test": "1.64.1",
     "@types/node": "^26.6.6",
-    "@vitejs/plugin-vue": "^6.0.10",
+    "@vitejs/plugin-vue": "^6.0.11",
     "@vitest/coverage-v8": "^5.1.0",
-    "@vue/test-utils": "^2.5.1",
+    "@vue/test-utils": "2.5.1",
     "concurrently": "^10.0.7",
     "cross-env": "^10.1.0",
-    "eslint": "^10.14.0",
-    "eslint-plugin-vue": "^10.12.0",
+    "eslint": "^10.15.0",
+    "eslint-plugin-vue": "^10.12.1",
     "happy-dom": "^21.0.4",
+    "playwright-core": "1.64.1",
     "postcss-html": "^2.0.0",
-    "prettier": "^3.9.10",
+    "prettier": "3.9.10",
     "stylelint": "^18.0.0",
     "stylelint-config-standard": "^41.0.0",
     "typescript": "^7.0.2",
-    "vite": "^8.3.6",
+    "vite": "^8.3.8",
     "vitest": "^5.0.3"
   }
 }

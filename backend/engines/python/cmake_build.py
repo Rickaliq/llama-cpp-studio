@@ -155,6 +155,8 @@ class BuildConfig:
     cflags: str = _BC["cflags"]
     cxxflags: str = _BC["cxxflags"]
     env_vars: Dict[str, str] = field(default_factory=dict)
+    # Optional installed CUDA toolkit version for this build ("" = active).
+    cuda_toolkit: str = _BC.get("cuda_toolkit", "")
 
     def __post_init__(self):
         self.normalize()
@@ -213,6 +215,7 @@ class CmakeBuildHost:
 
     def _check_cuda_toolkit_available(
         self,
+        preferred_toolkit: str = "",
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Check if CUDA Toolkit is available on the system.
@@ -223,6 +226,33 @@ class CmakeBuildHost:
             - cuda_root: Path to CUDA root directory if found, None otherwise
             - error_message: Error message if not available, None otherwise
         """
+        # A per-engine binding wins over the active toolkit: a source build
+        # must use the toolkit the user bound to this engine, not whichever
+        # toolkit happens to be active globally.
+        if str(preferred_toolkit or "").strip():
+            try:
+                from backend.cuda_installer import get_cuda_installer
+
+                env = get_cuda_installer().get_cuda_env(str(preferred_toolkit).strip())
+                cuda_path = str(env.get("CUDA_HOME") or env.get("CUDA_PATH") or "").strip()
+                nvcc_path = os.path.join(cuda_path, "bin", "nvcc") if cuda_path else ""
+                if not cuda_path or not os.path.exists(nvcc_path):
+                    return (
+                        False,
+                        None,
+                        f"CUDA toolkit {preferred_toolkit} is not installed or has no nvcc.",
+                    )
+                is_complete, missing = self._verify_cuda_toolkit_complete(cuda_path)
+                if not is_complete:
+                    return (
+                        False,
+                        None,
+                        f"CUDA toolkit {preferred_toolkit} is incomplete, missing: {missing}",
+                    )
+                return (True, cuda_path, None)
+            except Exception as exc:
+                return (False, None, f"Could not resolve CUDA toolkit {preferred_toolkit}: {exc}")
+
         # First, check CUDA installer for installations in data directory
         try:
             from backend.cuda_installer import get_cuda_installer
@@ -527,21 +557,24 @@ class CmakeBuildHost:
         return detected
 
     def get_optimal_build_threads(self) -> int:
-        """Compiler parallelism: every CPU this process may actually use.
+        """Compiler parallelism that fits this host's CPUs and free memory.
 
-        The previous 75% heuristic left a quarter of the host idle during the
-        longest CPU-bound work Studio runs. ``effective_cpu_count`` uses
-        affinity and the cgroup quota so the value also respects container
-        limits. ``STUDIO_BUILD_THREADS`` overrides it for hosts that want to
-        keep headroom for serving.
+        ``effective_cpu_count`` uses affinity and the cgroup quota so the value
+        also respects container limits, and ``build_job_budget`` keeps the
+        compile burst from consuming the memory the control plane and a
+        resident model need (an unbounded CUDA build otherwise makes the whole
+        box unresponsive). ``STUDIO_BUILD_THREADS`` overrides it for hosts that
+        want a different tradeoff.
         """
-        from backend.concurrency import effective_cpu_count
+        from backend.concurrency import build_job_budget
 
         try:
             configured = os.getenv("STUDIO_BUILD_THREADS", "").strip()
             if configured:
                 return max(1, int(configured))
-            return max(1, effective_cpu_count())
+            # 8 GiB per job: nvcc for a multi-architecture build is the
+            # heaviest compiler Studio starts.
+            return max(1, build_job_budget(per_job_kib=8 * 1024 * 1024))
         except (TypeError, ValueError):
             return 1
 
@@ -629,7 +662,7 @@ class CmakeBuildHost:
                 last_flush[0] = now
 
         async def flush(*, complete_stage: bool = False) -> None:
-            # Intermediate flushes must NOT snap to ceil â€” that used to jump the
+            # Intermediate flushes must NOT snap to ceil — that used to jump the
             # bar to ~92% after git clone finished. Only snap when a stage ends
             # successfully and the caller asks for it (e.g. end of compile).
             if complete_stage:

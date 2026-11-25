@@ -32,6 +32,11 @@ vi.mock('axios', () => ({
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: routerPush, replace: routerReplace }),
+  RouterLink: {
+    name: 'RouterLink',
+    props: ['to'],
+    template: '<a :href="to"><slot /></a>',
+  },
   useRoute: () => ({
     name: 'search',
     get query() {
@@ -111,14 +116,11 @@ function catalogAudioResult({
         label: 'Qwen3 ASR 0.6B',
         method,
         method_label:
+          method === 'direct' ? 'Direct HF' : method === 'composite' ? 'Assemble' : 'Convert',
+        method_hint:
           method === 'direct'
-            ? 'Direct HF'
-            : method === 'composite'
-              ? 'Assemble'
-              : 'Convert',
-        method_hint: method === 'direct'
-          ? 'Downloads a ready Hugging Face snapshot into the framework layout (prefers audio.cpp model_manager_v2 when available).'
-          : 'Installs with model_manager_v2.py.',
+            ? 'Downloads a ready Hugging Face snapshot into the framework layout (prefers audio.cpp model_manager_v2 when available).'
+            : 'Installs with model_manager_v2.py.',
         installable: true,
         uses_model_manager: method !== 'direct',
         manager_backend: 'v2',
@@ -193,9 +195,7 @@ function catalogHfResult({
             ]
           : [],
         dflash_files: withDflash
-          ? [
-              { filename: 'laguna-s-2.1-DFlash-BF16.gguf', size: 2200, label: 'BF16' },
-            ]
+          ? [{ filename: 'laguna-s-2.1-DFlash-BF16.gguf', size: 2200, label: 'BF16' }]
           : [],
       },
     },
@@ -212,7 +212,12 @@ function mountCatalogSearch() {
       stubs: {
         Button: {
           props: ['label', 'loading', 'disabled'],
-          template: '<button :data-label="label" :data-loading="loading ? \'1\' : \'0\'" :disabled="disabled" @click="$emit(\'click\')">{{ label }}</button>',
+          template:
+            '<button :data-label="label" :data-loading="loading ? \'1\' : \'0\'" :disabled="disabled" @click="$emit(\'click\')">{{ label }}</button>',
+        },
+        RouterLink: {
+          props: ['to'],
+          template: '<a :href="to"><slot /></a>',
         },
         Tag: {
           props: ['value'],
@@ -247,7 +252,11 @@ function mountCatalogSearch() {
           </select>`,
         },
         LoadingState: true,
-        EmptyState: true,
+        EmptyState: {
+          props: ['title', 'description', 'role'],
+          template:
+            '<div class="empty-stub" :role="role"><h2>{{ title }}</h2><p v-if="description">{{ description }}</p><slot /></div>',
+        },
         Dialog: {
           props: ['visible', 'header', 'modal', 'style', 'class'],
           emits: ['update:visible'],
@@ -347,7 +356,9 @@ describe('ModelSearch catalog integration', () => {
 
     const wrapper = mountCatalogSearch()
     await flushPromises()
-    const searchBtn = wrapper.findAll('button').find((btn) => btn.attributes('data-label') === 'Search')
+    const searchBtn = wrapper
+      .findAll('button')
+      .find((btn) => btn.attributes('data-label') === 'Search')
     expect(searchBtn).toBeTruthy()
     await searchBtn.trigger('click')
     await flushPromises()
@@ -435,7 +446,9 @@ describe('ModelSearch catalog integration', () => {
   it('shows MTP draft selector and downloads the default Q8_0 companion', async () => {
     const wrapper = await mountAndSearch(() => catalogHfResult({ withMtp: true }))
 
-    const mtpSelect = wrapper.findAll('select').find((el) => (el.attributes('id') || '').startsWith('catalog-mtp-'))
+    const mtpSelect = wrapper
+      .findAll('select')
+      .find((el) => (el.attributes('id') || '').startsWith('catalog-mtp-'))
     expect(mtpSelect).toBeTruthy()
     expect(mtpSelect.attributes('data-option-count')).toBe('3')
     expect(mtpSelect.element.value).toBe('MTP/mtp-model-Q8_0.gguf')
@@ -463,7 +476,9 @@ describe('ModelSearch catalog integration', () => {
   it('downloads the selected MTP draft when changed from the default', async () => {
     const wrapper = await mountAndSearch(() => catalogHfResult({ withMtp: true }))
 
-    const mtpSelect = wrapper.findAll('select').find((el) => (el.attributes('id') || '').startsWith('catalog-mtp-'))
+    const mtpSelect = wrapper
+      .findAll('select')
+      .find((el) => (el.attributes('id') || '').startsWith('catalog-mtp-'))
     await mtpSelect.setValue('MTP/mtp-model-Q4_0.gguf')
     await flushPromises()
 
@@ -491,7 +506,9 @@ describe('ModelSearch catalog integration', () => {
     const wrapper = await mountAndSearch(() => catalogHfResult({ withDflash: true }))
 
     expect(wrapper.text()).toContain('DFlash')
-    const dflashSelect = wrapper.findAll('select').find((el) => (el.attributes('id') || '').startsWith('catalog-dflash-'))
+    const dflashSelect = wrapper
+      .findAll('select')
+      .find((el) => (el.attributes('id') || '').startsWith('catalog-dflash-'))
     expect(dflashSelect).toBeTruthy()
     expect(dflashSelect.element.value).toBe('laguna-s-2.1-DFlash-BF16.gguf')
 
@@ -552,12 +569,14 @@ describe('ModelSearch catalog integration', () => {
   })
 
   it('shows Configure for already downloaded variants', async () => {
-    modelStore.allQuantizations = [{
-      id: 'org--model--Q4_K_M',
-      huggingface_id: 'org/model',
-      quantization: 'Q4_K_M',
-      filename: 'model-Q4_K_M.gguf',
-    }]
+    modelStore.allQuantizations = [
+      {
+        id: 'org--model--Q4_K_M',
+        huggingface_id: 'org/model',
+        quantization: 'Q4_K_M',
+        filename: 'model-Q4_K_M.gguf',
+      },
+    ]
 
     const wrapper = await mountAndSearch()
     const configureBtn = wrapper.find('button[data-label="Configure"]')
@@ -569,19 +588,27 @@ describe('ModelSearch catalog integration', () => {
   })
 
   it('lets downloaded variants reconfigure projector and MTP companions', async () => {
-    modelStore.allQuantizations = [{
-      id: 'org--model--Q4_K_M',
-      huggingface_id: 'org/model',
-      quantization: 'Q4_K_M',
-      filename: 'model-Q4_K_M.gguf',
-      mmproj_filename: 'mmproj-F16.gguf',
-      mtp_filename: 'MTP/mtp-model-Q8_0.gguf',
-    }]
+    modelStore.allQuantizations = [
+      {
+        id: 'org--model--Q4_K_M',
+        huggingface_id: 'org/model',
+        quantization: 'Q4_K_M',
+        filename: 'model-Q4_K_M.gguf',
+        mmproj_filename: 'mmproj-F16.gguf',
+        mtp_filename: 'MTP/mtp-model-Q8_0.gguf',
+      },
+    ]
 
-    const wrapper = await mountAndSearch(() => catalogHfResult({ withProjector: true, withMtp: true }))
+    const wrapper = await mountAndSearch(() =>
+      catalogHfResult({ withProjector: true, withMtp: true }),
+    )
 
-    const projector = wrapper.findAll('select').find((el) => (el.attributes('id') || '').startsWith('catalog-projector-'))
-    const mtpSelect = wrapper.findAll('select').find((el) => (el.attributes('id') || '').startsWith('catalog-mtp-'))
+    const projector = wrapper
+      .findAll('select')
+      .find((el) => (el.attributes('id') || '').startsWith('catalog-projector-'))
+    const mtpSelect = wrapper
+      .findAll('select')
+      .find((el) => (el.attributes('id') || '').startsWith('catalog-mtp-'))
     expect(projector).toBeTruthy()
     expect(mtpSelect).toBeTruthy()
     expect(projector.element.value).toBe('mmproj-F16.gguf')
@@ -635,7 +662,9 @@ describe('ModelSearch catalog integration', () => {
       })
     })
 
-    const searchBtn = wrapper.findAll('button').find((btn) => btn.attributes('data-label') === 'Search')
+    const searchBtn = wrapper
+      .findAll('button')
+      .find((btn) => btn.attributes('data-label') === 'Search')
     await searchBtn.trigger('click')
     await flushPromises()
 
@@ -674,7 +703,9 @@ describe('ModelSearch catalog integration', () => {
     expect(dialog.text()).toContain('Family override')
     expect(dialog.text()).not.toContain('Source file')
 
-    const familyInput = dialog.findAll('input').find((el) => el.attributes('placeholder')?.includes('Detected'))
+    const familyInput = dialog
+      .findAll('input')
+      .find((el) => el.attributes('placeholder')?.includes('Detected'))
     expect(familyInput).toBeTruthy()
     expect(familyInput.element.value).toBe('qwen3_asr')
 
@@ -693,10 +724,12 @@ describe('ModelSearch catalog integration', () => {
     const wrapper = await mountAndSearch(() => catalogAudioResult({ method: 'direct' }))
 
     fetchModels.mockImplementation(async () => {
-      modelStore.allQuantizations = [{
-        id: 'audio-cpp--Qwen3-ASR-0.6B',
-        source: { id: 'Qwen3-ASR-0.6B' },
-      }]
+      modelStore.allQuantizations = [
+        {
+          id: 'audio-cpp--Qwen3-ASR-0.6B',
+          source: { id: 'Qwen3-ASR-0.6B' },
+        },
+      ]
     })
 
     await wrapper.find('button[data-label="Install"]').trigger('click')
@@ -723,10 +756,12 @@ describe('ModelSearch catalog integration', () => {
   })
 
   it('shows Configure for previously installed audio.cpp packages', async () => {
-    modelStore.allQuantizations = [{
-      id: 'audio-cpp--Qwen3-ASR-0.6B',
-      source: { id: 'Qwen3-ASR-0.6B' },
-    }]
+    modelStore.allQuantizations = [
+      {
+        id: 'audio-cpp--Qwen3-ASR-0.6B',
+        source: { id: 'Qwen3-ASR-0.6B' },
+      },
+    ]
     const wrapper = await mountAndSearch(() => catalogAudioResult({ method: 'direct' }))
 
     expect(wrapper.find('button[data-label="Install"]').exists()).toBe(false)
@@ -765,7 +800,9 @@ describe('ModelSearch catalog integration', () => {
     await methodSelect.setValue('composite')
     await flushPromises()
 
-    const searchBtn = wrapper.findAll('button').find((btn) => btn.attributes('data-label') === 'Search')
+    const searchBtn = wrapper
+      .findAll('button')
+      .find((btn) => btn.attributes('data-label') === 'Search')
     await searchBtn.trigger('click')
     await flushPromises()
 
@@ -790,9 +827,10 @@ describe('ModelSearch catalog integration', () => {
     const wrapper = await mountAndSearch()
     const progressStore = useProgressStore()
     downloadGgufBundle.mockImplementation(
-      () => new Promise((resolve) => {
-        settlePendingDownload = resolve
-      }),
+      () =>
+        new Promise((resolve) => {
+          settlePendingDownload = resolve
+        }),
     )
 
     const downloadBtn = wrapper.find('button[data-label="Download"]')
@@ -827,5 +865,110 @@ describe('ModelSearch catalog integration', () => {
 
     const refreshedBtn = wrapper.find('button[data-label="Download"]')
     expect(refreshedBtn.attributes('data-loading')).toBe('0')
+  })
+
+  it('renders one page header with the import action and result-count meta', async () => {
+    const wrapper = await mountAndSearch()
+
+    expect(wrapper.get('.page-header h1').text()).toBe('Search models')
+    expect(wrapper.get('.page-header details summary').attributes('aria-label')).toBe(
+      'About Search models',
+    )
+    expect(wrapper.get('button[data-label="Import audio bundle"]').exists()).toBe(true)
+    expect(wrapper.get('.page-header__meta').text()).toContain('1 result')
+    expect(wrapper.get('.page-section__title').text()).toBe('Search results')
+    wrapper.unmount()
+  })
+
+  it('guides an empty search with examples and runs the chosen example', async () => {
+    modelStore.searchQuery = ''
+    modelStore.searchResults = []
+    modelStore.searchHasSearched = false
+    modelStore.searchLastQuery = ''
+    const wrapper = mountCatalogSearch()
+    await flushPromises()
+
+    expect(wrapper.get('.empty-stub h2').text()).toBe('Search the model catalog')
+    expect(wrapper.text()).toContain('start from an example')
+    const example = wrapper
+      .findAll('button')
+      .find((button) => button.attributes('data-label') === 'Try Qwen3')
+    expect(example).toBeTruthy()
+
+    searchCatalog.mockClear()
+    await example.trigger('click')
+    await flushPromises()
+
+    expect(searchCatalog).toHaveBeenCalledWith('Qwen3', expect.any(Object))
+    wrapper.unmount()
+  })
+
+  it('shows provider unavailability in the shared state banner', async () => {
+    searchCatalog.mockImplementation(async () => {
+      modelStore.catalogProviderStatus = {
+        huggingface: { available: false, reason: 'rate limited' },
+      }
+      modelStore.searchResults = []
+      modelStore.catalogTotal = 0
+      modelStore.searchHasSearched = true
+      modelStore.searchLastQuery = 'org'
+      return { items: [], total: 0, page: 1, has_more: false, provider_status: {} }
+    })
+    const wrapper = mountCatalogSearch()
+    await flushPromises()
+    const searchBtn = wrapper
+      .findAll('button')
+      .find((btn) => btn.attributes('data-label') === 'Search')
+    await searchBtn.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.state-banner--warning').text()).toContain('huggingface unavailable')
+    expect(wrapper.get('.state-banner--warning').text()).toContain('rate limited')
+    wrapper.unmount()
+  })
+
+  it('offers retry and import when the search request fails', async () => {
+    searchCatalog.mockRejectedValue(new Error('Catalog offline'))
+    const wrapper = mountCatalogSearch()
+    await flushPromises()
+    const searchBtn = wrapper
+      .findAll('button')
+      .find((btn) => btn.attributes('data-label') === 'Search')
+    await searchBtn.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.empty-stub h2').text()).toBe('Could not search')
+    expect(wrapper.get('.empty-stub').text()).toContain('Catalog offline')
+    expect(wrapper.get('.empty-stub').attributes('role')).toBe('alert')
+    expect(wrapper.get('.empty-stub').text()).toContain('Retry')
+    wrapper.unmount()
+  })
+
+  it('opens the audio import dialog from the page header', async () => {
+    const wrapper = mountCatalogSearch()
+    await flushPromises()
+    await wrapper.get('button[data-label="Import audio bundle"]').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.get('.dialog-stub')
+    expect(dialog.attributes('data-header')).toBe('Import prepared audio.cpp bundle')
+    expect(dialog.text()).toContain('Local directory')
+    wrapper.unmount()
+  })
+
+  it('shows a dismissible token notice and hides it after dismissal', async () => {
+    modelStore.hasHuggingfaceToken = false
+    const wrapper = mountCatalogSearch()
+    await flushPromises()
+
+    expect(wrapper.get('.huggingface-token-notice').text()).toContain('Hugging Face token')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.attributes('data-label') === 'Dismiss')
+      .trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.huggingface-token-notice').exists()).toBe(false)
+    wrapper.unmount()
   })
 })

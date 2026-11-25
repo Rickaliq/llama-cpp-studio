@@ -586,7 +586,9 @@ class CmakeSourceInstaller(GenericNativeInstaller):
         # Validate CUDA Toolkit availability if CUDA is enabled
         validated_cuda_root = None
         if build_config.enable_cuda:
-            cuda_available, cuda_root, cuda_error = host._check_cuda_toolkit_available()
+            cuda_available, cuda_root, cuda_error = host._check_cuda_toolkit_available(
+                getattr(build_config, "cuda_toolkit", "")
+            )
             if not cuda_available:
                 # Check if CUDA installer is available
                 try:
@@ -851,12 +853,29 @@ class CmakeSourceInstaller(GenericNativeInstaller):
                     f"CUDA library configuration complete: {len(unique_lib_dirs)} directories"
                 )
 
-                # 7. Set CUDA host compiler explicitly (use system gcc/g++)
+                # 7. Set a CUDA host compiler the toolkit supports (not
+                # necessarily the distro's unversioned g++, which may be newer
+                # than nvcc accepts).
                 if os.name != "nt":
-                    gcc_path = shutil.which("gcc")
-                    gxx_path = shutil.which("g++")
-                    if gcc_path and gxx_path:
+                    from backend.cuda_host_compiler import (
+                        cuda_toolkit_version,
+                        select_cuda_host_compiler,
+                    )
+
+                    gxx_path = select_cuda_host_compiler(validated_cuda_root)
+                    if gxx_path:
                         cmake_args.append(f"-DCMAKE_CUDA_HOST_COMPILER={gxx_path}")
+                    from backend.cuda_glibc_compat import (
+                        cuda_c23_shim_flag,
+                        needs_cuda_c23_shim,
+                    )
+
+                    if needs_cuda_c23_shim(
+                        cuda_version=cuda_toolkit_version(validated_cuda_root)
+                    ) and not any(str(arg).startswith("-DCMAKE_CUDA_FLAGS=") for arg in cmake_args):
+                        cmake_args.append(
+                            f"-DCMAKE_CUDA_FLAGS={cuda_c23_shim_flag(validated_cuda_root)}"
+                        )
 
                 logger.info(
                     f"CUDA configuration: compiler={nvcc_path}, toolkit={validated_cuda_root}"
@@ -1831,6 +1850,17 @@ class CmakeSourceInstaller(GenericNativeInstaller):
                     "install_dir": os.path.join(self.install_root, version_name),
                 },
             )
+        # CUDA provenance is captured before the build spawns anything: it
+        # describes the toolkit this build's environment resolves to (the
+        # CMake configure step binds the Studio-managed root when one exists,
+        # otherwise the inherited CUDA_HOME/CUDA_PATH) and it survives a later
+        # failure, where the task detail is the only remaining record.
+        if (build_config or BuildConfig()).enable_cuda:
+            from backend.engines.cuda_provenance import record_cuda_provenance
+
+            build_env = dict(os.environ)
+            build_env.update(dict(getattr(build_config, "env_vars", None) or {}))
+            record_cuda_provenance(progress_manager, task_id, build_env)
         self._source = state
         try:
             execution = await self.execute_operation(

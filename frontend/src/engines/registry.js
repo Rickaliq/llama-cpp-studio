@@ -258,35 +258,6 @@ export const ENGINE_DESCRIPTORS = Object.freeze({
     buildHint:
       'Set the SXM2 fork repo and branch. Install Studio-managed CUDA 12.8 first; the fork then builds its own validated dependency set.',
   }),
-  sglang_sm70: Object.freeze({
-    label: 'SGLang SM70',
-    ...SGLANG_PANEL_BASE,
-    panel: Object.freeze({
-      variant: 'v100',
-      defaultRepo: 'https://github.com/lapy/sglang-sm70.git',
-      projectUrl: 'https://github.com/lapy/sglang-sm70',
-    }),
-    card: Object.freeze({
-      mark: Object.freeze({ icon: 'pi pi-bolt' }),
-      badge: Object.freeze({ value: 'SM70', severity: 'warn' }),
-      subtitle: 'Volta / SM70 source build.',
-    }),
-    repoSource: 'SGLang-SM70',
-    versionsKey: 'sglangSm70Versions',
-    icon: 'pi-sparkles',
-    fallbackFormats: Object.freeze(['safetensors']),
-    venv: true,
-    apiSegment: 'sglang-sm70',
-    nullSafeStatus: true,
-    dialogIcon: 'pi-bolt',
-    genericApi: true,
-    managerKey: 'sglang_sm70',
-    sglangRuntimeUi: true,
-    runtimeProfiles: Object.freeze({ llm: 'default', diffusion: 'diffusion' }),
-    runtimeKey: 'sglang_runtime',
-    buildHint:
-      'Set the SM70 fork repo and branch. Install Studio-managed CUDA 12.8 first; the fork then builds its own SM70 kernels and validated dependency set.',
-  }),
   vllm: Object.freeze({
     label: 'vLLM',
     ...SGLANG_PANEL_BASE,
@@ -445,6 +416,9 @@ export const SGLANG_RUNTIME_OPTIONS = Object.freeze([
 
 /** Audio config-panel family; no view compares an engine id by hand. */
 export const AUDIO_ENGINE_IDS = byField('configPanel', 'audio')
+
+/** Canonical engine whose single Audio workspace Studio renders today. */
+export const DEFAULT_AUDIO_ENGINE_ID = AUDIO_ENGINE_IDS[0]
 
 /** Shared installer-panel family (SglangEnginePanel/store trio) — includes vllm. */
 export const SG_PANEL_ENGINE_IDS = byField('panelFamily', 'sglang')

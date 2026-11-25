@@ -136,12 +136,11 @@ def test_task_resolution_is_a_deterministic_table():
 
 
 def test_resolve_operation_prefers_engine_observed_endpoints():
-    assert resolve_operation(
-        task="vc", preferred_api_endpoint="/v1/audio/speech"
-    ).id == "speech"
-    assert resolve_operation(
-        task="tts", family_endpoints=["/v1/audio/transcriptions"]
-    ).id == "transcriptions"
+    assert resolve_operation(task="vc", preferred_api_endpoint="/v1/audio/speech").id == "speech"
+    assert (
+        resolve_operation(task="tts", family_endpoints=["/v1/audio/transcriptions"]).id
+        == "transcriptions"
+    )
     assert resolve_operation(preferred_api_endpoint="/v1/tasks/run").id == "tasks_run"
     # GET-only routes never win a request-resolution lookup.
     assert resolve_operation(task="tts", family_endpoints=["/v1/models"]).id == "speech"
@@ -284,7 +283,6 @@ def test_tracking_settings_envelope_round_trip():
     assert cmake["cuda"] is True
     assert cmake["backend"] == "cuda"
     assert cmake["jobs"] == 8
-    assert "tracking_ref" not in cmake or True  # tracking keys also present in merged
     # cmake extract should not drop backend when tracking keys coexist
     assert set(cmake) >= {"backend", "build_type", "jobs"}
 

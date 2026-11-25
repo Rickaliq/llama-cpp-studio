@@ -39,9 +39,7 @@ def _cache_key(active: dict, candidates: List[str]) -> str:
         mtime_ns = root.stat().st_mtime_ns
     except OSError:
         mtime_ns = 0
-    return hashlib.sha256(
-        f"{source}\n{commit}\n{mtime_ns}\n{listing}".encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(f"{source}\n{commit}\n{mtime_ns}\n{listing}".encode()).hexdigest()
 
 
 def _read_cache(key: str) -> List[dict] | None:
@@ -80,6 +78,24 @@ def _candidate_utility_ids(root: Path) -> List[str]:
     return sorted(candidates)
 
 
+def _utility_weights_path(root: Path, model_id: str) -> Path | None:
+    """Resolve the weights path the engine's inspect API expects for one utility.
+
+    audio.cpp loads built-in utilities with ``--model <weights-path>`` plus
+    ``--load-option utility=<id>`` and rejects the bare id: the path is a
+    directory for packaged utilities (``deepfilternet2``, ``zipenhancer``,
+    ``flashsr``) and a ``.safetensors`` checkpoint otherwise, so a stem such as
+    ``gtcrn_dns3`` lives beside other checkpoints in its family directory.
+    """
+    directory = root / model_id
+    if directory.is_dir():
+        return directory
+    for candidate in sorted(root.glob(f"*/{model_id}.safetensors")):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def discover_builtin_audio_packages(active: dict, families: Iterable[str]) -> list[dict]:
     """Expose only ids accepted by the active engine, with its own task metadata.
 
@@ -95,7 +111,13 @@ def discover_builtin_audio_packages(active: dict, families: Iterable[str]) -> li
     cli = str(active.get("cli_binary_path") or "")
     contract = load_family_contract(source, BUILTIN_AUDIO_FAMILY)
     root = Path(source) / "assets" / "framework" / "audio_utilities"
-    if not contract or contract.get("packages") or not source or not root.is_dir() or not os.path.isfile(cli):
+    if (
+        not contract
+        or contract.get("packages")
+        or not source
+        or not root.is_dir()
+        or not os.path.isfile(cli)
+    ):
         return []
     candidates = _candidate_utility_ids(root)
     if not candidates:
@@ -109,15 +131,25 @@ def discover_builtin_audio_packages(active: dict, families: Iterable[str]) -> li
     env = {**os.environ, **audio_cpp_inspect_env(cli, source_path=source)}
 
     def _probe(model_id: str) -> dict | None:
+        weights = _utility_weights_path(root, model_id)
+        if weights is None:
+            return None
         argv = build_audio_cpp_inspect_argv(
-            cli, model_id, family=BUILTIN_AUDIO_FAMILY,
+            cli,
+            str(weights),
+            family=BUILTIN_AUDIO_FAMILY,
             model_spec_override=str(Path(source) / "model_specs"),
+            load_options={"utility": model_id},
         )
         try:
             process = subprocess.run(
-                [*argv, "--inspect", "--json"], cwd=source, env=env,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, timeout=_PROBE_TIMEOUT,
+                [*argv, "--inspect", "--json"],
+                cwd=source,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=_PROBE_TIMEOUT,
             )
         except (OSError, subprocess.TimeoutExpired):
             return None
@@ -126,10 +158,11 @@ def discover_builtin_audio_packages(active: dict, families: Iterable[str]) -> li
         _, inspection = select_inspect_payload(process.stdout)
         if inspection.get("family") != BUILTIN_AUDIO_FAMILY or not inspection.get("task_names"):
             return None
-        modes = list(dict.fromkeys(
-            mode for row in inspection.get("tasks") or []
-            for mode in row.get("modes") or []
-        ))
+        modes = list(
+            dict.fromkeys(
+                mode for row in inspection.get("tasks") or [] for mode in row.get("modes") or []
+            )
+        )
         return {
             "id": f"builtin-{model_id}",
             "display_name": f"{model_id} (built-in)",

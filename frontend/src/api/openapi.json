@@ -218,8 +218,88 @@
         "title": "BackupReconcileResponse",
         "type": "object"
       },
+      "BenchmarkAggregate": {
+        "properties": {
+          "time_to_first_token_ms": {
+            "$ref": "#/components/schemas/BenchmarkAggregateStats"
+          },
+          "tokens_per_second": {
+            "$ref": "#/components/schemas/BenchmarkAggregateStats"
+          },
+          "total_seconds": {
+            "$ref": "#/components/schemas/BenchmarkAggregateStats"
+          }
+        },
+        "required": [
+          "time_to_first_token_ms",
+          "total_seconds",
+          "tokens_per_second"
+        ],
+        "title": "BenchmarkAggregate",
+        "type": "object"
+      },
+      "BenchmarkAggregateStats": {
+        "properties": {
+          "max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max"
+          },
+          "min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min"
+          },
+          "p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50"
+          },
+          "p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95"
+          }
+        },
+        "title": "BenchmarkAggregateStats",
+        "type": "object"
+      },
       "BenchmarkResponse": {
         "properties": {
+          "aggregate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BenchmarkAggregate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "completion_tokens": {
             "anyOf": [
               {
@@ -369,6 +449,11 @@
             "title": "Proxy Name",
             "type": "string"
           },
+          "repeats": {
+            "default": 1,
+            "title": "Repeats",
+            "type": "integer"
+          },
           "request_effective_tokens_per_second": {
             "anyOf": [
               {
@@ -379,6 +464,13 @@
               }
             ],
             "title": "Request Effective Tokens Per Second"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/BenchmarkRunResult"
+            },
+            "title": "Runs",
+            "type": "array"
           },
           "schema_version": {
             "default": 1,
@@ -414,6 +506,11 @@
           "total_seconds": {
             "title": "Total Seconds",
             "type": "number"
+          },
+          "warmup": {
+            "default": 0,
+            "title": "Warmup",
+            "type": "integer"
           }
         },
         "required": [
@@ -456,12 +553,72 @@
             "minLength": 1,
             "title": "Prompt",
             "type": "string"
+          },
+          "repeats": {
+            "default": 1,
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Repeats",
+            "type": "integer"
+          },
+          "warmup": {
+            "default": 0,
+            "maximum": 3.0,
+            "minimum": 0.0,
+            "title": "Warmup",
+            "type": "integer"
           }
         },
         "required": [
           "model_id"
         ],
         "title": "BenchmarkRunBody",
+        "type": "object"
+      },
+      "BenchmarkRunResult": {
+        "description": "One measured run; extra stored detail is not part of the API promise.",
+        "properties": {
+          "completion_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Tokens"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "time_to_first_token_ms": {
+            "title": "Time To First Token Ms",
+            "type": "number"
+          },
+          "tokens_per_second": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens Per Second"
+          },
+          "total_seconds": {
+            "title": "Total Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "index",
+          "time_to_first_token_ms",
+          "total_seconds"
+        ],
+        "title": "BenchmarkRunResult",
         "type": "object"
       },
       "Body_upload_model_reference_audio_api_models__model_id__reference_audio_post": {
@@ -862,11 +1019,146 @@
         "title": "LaunchApplyEntry",
         "type": "object"
       },
+      "OperationAttentionItem": {
+        "properties": {
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "evidence": {
+            "title": "Evidence",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "needs_confirmation": {
+            "title": "Needs Confirmation",
+            "type": "boolean"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "recovery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OperationRecoveryDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resource_key": {
+            "title": "Resource Key",
+            "type": "string"
+          },
+          "retry": {
+            "title": "Retry",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "number"
+          }
+        },
+        "required": [
+          "operation_id",
+          "task_id",
+          "kind",
+          "status",
+          "description",
+          "message",
+          "resource_key",
+          "evidence",
+          "retry",
+          "needs_confirmation",
+          "updated_at"
+        ],
+        "title": "OperationAttentionItem",
+        "type": "object"
+      },
+      "OperationAttentionResponse": {
+        "properties": {
+          "count": {
+            "default": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/OperationAttentionItem"
+            },
+            "title": "Operations",
+            "type": "array"
+          }
+        },
+        "title": "OperationAttentionResponse",
+        "type": "object"
+      },
+      "OperationRecoveryDetail": {
+        "description": "The decision restart reconciliation stored on the row, when present.",
+        "properties": {
+          "evidence": {
+            "default": "",
+            "title": "Evidence",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "replayed": {
+            "default": 0,
+            "title": "Replayed",
+            "type": "integer"
+          },
+          "retry": {
+            "default": "",
+            "title": "Retry",
+            "type": "string"
+          },
+          "status": {
+            "default": "",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "OperationRecoveryDetail",
+        "type": "object"
+      },
       "ProxySettingsBody": {
         "properties": {
           "allow_anonymous": {
             "default": true,
             "title": "Allow Anonymous",
+            "type": "boolean"
+          },
+          "capture_request_payloads": {
+            "default": false,
+            "title": "Capture Request Payloads",
             "type": "boolean"
           },
           "default_model": {
@@ -1062,6 +1354,30 @@
               }
             ],
             "title": "Stream Idle Timeout Seconds"
+          },
+          "vram_admission": {
+            "default": "off",
+            "enum": [
+              "off",
+              "warn",
+              "enforce"
+            ],
+            "title": "Vram Admission",
+            "type": "string"
+          },
+          "vram_estimates": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Vram Estimates",
+            "type": "object"
+          },
+          "vram_safety_margin_mib": {
+            "default": 1024,
+            "maximum": 1048576.0,
+            "minimum": 0.0,
+            "title": "Vram Safety Margin Mib",
+            "type": "integer"
           }
         },
         "title": "ProxySettingsBody",
@@ -1253,6 +1569,69 @@
           "token"
         ],
         "title": "SessionLogin",
+        "type": "object"
+      },
+      "StorageCleanupApplyBody": {
+        "properties": {
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "plan_id": {
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Plan Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_id"
+        ],
+        "title": "StorageCleanupApplyBody",
+        "type": "object"
+      },
+      "StorageCleanupPreviewBody": {
+        "properties": {
+          "category": {
+            "enum": [
+              "models",
+              "hf_cache",
+              "engine_installs",
+              "cuda_toolkits",
+              "jit_caches",
+              "history_backups",
+              "accounting_db"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "keep_history": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keep History"
+          },
+          "unit_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Unit Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "category"
+        ],
+        "title": "StorageCleanupPreviewBody",
         "type": "object"
       },
       "TemplateCreateBody": {
@@ -3602,6 +3981,68 @@
         ]
       }
     },
+    "/api/llama-versions/cuda-activate": {
+      "post": {
+        "description": "Activate an already-installed CUDA Toolkit version.",
+        "operationId": "activate_cuda_api_llama_versions_cuda_activate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Request",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Activate Cuda",
+        "tags": [
+          "llama-versions"
+        ]
+      }
+    },
+    "/api/llama-versions/cuda-cleanup": {
+      "post": {
+        "description": "Delete cached CUDA installer downloads (installed toolkits are kept).",
+        "operationId": "cleanup_cuda_installers_api_llama_versions_cuda_cleanup_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Cleanup Cuda Installers",
+        "tags": [
+          "llama-versions"
+        ]
+      }
+    },
     "/api/llama-versions/cuda-install": {
       "post": {
         "description": "Install CUDA Toolkit with optional cuDNN and TensorRT",
@@ -4456,6 +4897,28 @@
         "summary": "Status",
         "tags": [
           "lmdeploy"
+        ]
+      }
+    },
+    "/api/metrics": {
+      "get": {
+        "description": "Expose Studio's operational state as Prometheus text.\n\nManagement-authorized like the rest of ``/api``. Values come from existing\nin-process state and cached observations; unknown values are omitted. The\nresponse is the Prometheus text format (version 0.0.4).",
+        "operationId": "get_metrics_api_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Prometheus metrics for the management process",
+        "tags": [
+          "observability"
         ]
       }
     },
@@ -6439,6 +6902,28 @@
         ]
       }
     },
+    "/api/operations/attention": {
+      "get": {
+        "description": "List interrupted and unknown operations and only their supported actions.\n\nRead-only: it reads the durable rows, never replays, confirms, or dismisses\nwork, and leaves the admission fences exactly as reconciliation stored them.",
+        "operationId": "operation_attention_api_operations_attention_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationAttentionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Operation Attention",
+        "tags": [
+          "status"
+        ]
+      }
+    },
     "/api/operations/reconcile": {
       "post": {
         "description": "Reconcile durable operations with this process. Does not replay them.",
@@ -7037,6 +7522,47 @@
         ]
       }
     },
+    "/api/proxy/requests/{request_id}/replay": {
+      "post": {
+        "description": "Re-send a captured request to the still-loaded engine.\n\nCaptured payloads are memory-only and opt-in. Replay is an operator action:\nit bypasses quota accounting and reaches the loaded engine directly. It is\nintentionally rejected when the model is no longer loaded so a replay can\nnever silently start a new process or hit a different model.",
+        "operationId": "replay_proxy_request_api_proxy_requests__request_id__replay_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replay Proxy Request",
+        "tags": [
+          "proxy"
+        ]
+      }
+    },
     "/api/proxy/settings": {
       "put": {
         "operationId": "put_proxy_settings_api_proxy_settings_put",
@@ -7090,6 +7616,26 @@
           }
         },
         "summary": "Reset Proxy Stats",
+        "tags": [
+          "proxy"
+        ]
+      }
+    },
+    "/api/proxy/vram": {
+      "get": {
+        "description": "GPU admission observation: mode, probe, estimates and last decision.\n\nRead-only and additive. The probe is never run here; it reports the last\ncached probe so the page load cannot block on NVML or nvidia-smi.",
+        "operationId": "get_proxy_vram_api_proxy_vram_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Proxy Vram",
         "tags": [
           "proxy"
         ]
@@ -7287,322 +7833,6 @@
         "summary": "Put Inference Settings",
         "tags": [
           "status"
-        ]
-      }
-    },
-    "/api/sglang-sm70/build-settings": {
-      "get": {
-        "operationId": "sglang_sm70_get_build_settings",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Sglang Sm70 Get Build Settings",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Build Settings",
-        "tags": [
-          "sglang"
-        ]
-      },
-      "put": {
-        "operationId": "sglang_sm70_save_build_settings",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "anyOf": [
-                  {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "title": "Settings"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Sglang Sm70 Save Build Settings",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Save Build Settings",
-        "tags": [
-          "sglang"
-        ]
-      }
-    },
-    "/api/sglang-sm70/cancel": {
-      "post": {
-        "operationId": "sglang_sm70_cancel",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "additionalProperties": true,
-                "title": "Payload",
-                "type": "object"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Sglang Sm70 Cancel",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Cancel",
-        "tags": [
-          "sglang"
-        ]
-      }
-    },
-    "/api/sglang-sm70/check-updates": {
-      "get": {
-        "operationId": "sglang_sm70_check_updates",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Sglang Sm70 Check Updates",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Check Updates",
-        "tags": [
-          "sglang"
-        ]
-      }
-    },
-    "/api/sglang-sm70/install": {
-      "post": {
-        "operationId": "sglang_sm70_install",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "anyOf": [
-                  {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "title": "Request"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Sglang Sm70 Install",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Install",
-        "tags": [
-          "sglang"
-        ]
-      }
-    },
-    "/api/sglang-sm70/install-source": {
-      "post": {
-        "operationId": "sglang_sm70_install_source",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "anyOf": [
-                  {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "title": "Request"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Sglang Sm70 Install Source",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Install Source",
-        "tags": [
-          "sglang"
-        ]
-      }
-    },
-    "/api/sglang-sm70/remove": {
-      "post": {
-        "operationId": "sglang_sm70_remove",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "anyOf": [
-                  {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "title": "Payload"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Sglang Sm70 Remove",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Remove",
-        "tags": [
-          "sglang"
-        ]
-      }
-    },
-    "/api/sglang-sm70/status": {
-      "get": {
-        "operationId": "sglang_sm70_status",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Sglang Sm70 Status",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Status",
-        "tags": [
-          "sglang"
         ]
       }
     },
@@ -8574,6 +8804,128 @@
         ]
       }
     },
+    "/api/storage/cleanup/apply": {
+      "post": {
+        "description": "Apply a previewed plan after re-scanning and revalidating every unit.",
+        "operationId": "storage_cleanup_apply_api_storage_cleanup_apply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StorageCleanupApplyBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Storage Cleanup Apply",
+        "tags": [
+          "storage"
+        ]
+      }
+    },
+    "/api/storage/cleanup/preview": {
+      "post": {
+        "description": "Resolve opaque unit ids into a short-lived, guarded cleanup plan.",
+        "operationId": "storage_cleanup_preview_api_storage_cleanup_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StorageCleanupPreviewBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Storage Cleanup Preview",
+        "tags": [
+          "storage"
+        ]
+      }
+    },
+    "/api/storage/inventory": {
+      "get": {
+        "description": "Return the cached (or freshly scanned) storage inventory.",
+        "operationId": "storage_inventory_api_storage_inventory_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "refresh",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Refresh",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Storage Inventory",
+        "tags": [
+          "storage"
+        ]
+      }
+    },
     "/api/system-stats": {
       "get": {
         "description": "Lightweight periodic system readings for an open System page.",
@@ -9410,6 +9762,26 @@
         ]
       }
     },
+    "/v1/tasks/batch": {
+      "post": {
+        "description": "Native generic batch (upstream app/server/api.md @ v0.9.5).\n\n``requests`` is forwarded untouched; the engine owns its shape and answers\nwith SSE, so the response is streamed unbuffered with SSE headers.",
+        "operationId": "proxy_tasks_batch_v1_tasks_batch_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Proxy Tasks Batch",
+        "tags": [
+          "audio-tasks-proxy"
+        ]
+      }
+    },
     "/v1/tasks/run": {
       "post": {
         "description": "Keep generic task JSON and Studio proxy filters on the native mapped route.",
@@ -9427,6 +9799,66 @@
         "summary": "Proxy Tasks Run",
         "tags": [
           "audio-tasks-proxy"
+        ]
+      }
+    },
+    "/v1/tasks/stream": {
+      "post": {
+        "description": "Generic streaming task (upstream app/server/api.md @ v0.9.5).\n\nThe body is the /v1/tasks/run body; ``model`` is rewritten to the stable\nnative id and the upstream response is streamed unbuffered, so\n``stream_format: \"sse\"`` reaches the client event by event.",
+        "operationId": "proxy_tasks_stream_v1_tasks_stream_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Proxy Tasks Stream",
+        "tags": [
+          "audio-tasks-proxy"
+        ]
+      }
+    },
+    "/v1/tasks/unload_all_models": {
+      "post": {
+        "description": "Release all engine memory on one instance (upstream api.md @ v0.9.5).\n\nUpstream takes no body and names no model. Studio's engine routes are\nmodel-scoped, so the route requires a concrete ``?model=`` pin to select\nthe engine instance; the pin is Studio routing metadata and is stripped\nbefore forwarding.",
+        "operationId": "proxy_tasks_unload_all_models_v1_tasks_unload_all_models_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Proxy Tasks Unload All Models",
+        "tags": [
+          "audio-task-admin-proxy"
+        ]
+      }
+    },
+    "/v1/tasks/unload_models": {
+      "post": {
+        "description": "Release engine memory for named models (upstream api.md @ v0.9.5).\n\nUpstream takes ``{\"model_ids\": [\"<engine id>\", ...]}``. Studio resolves\nevery id to its stable native id and pins the engine instance by the first\none; when the list is empty (or to choose the instance explicitly) an\n``?model=`` pin does the same job. The pin is Studio routing metadata and\nnever reaches the engine.",
+        "operationId": "proxy_tasks_unload_models_v1_tasks_unload_models_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Proxy Tasks Unload Models",
+        "tags": [
+          "audio-task-admin-proxy"
         ]
       }
     }

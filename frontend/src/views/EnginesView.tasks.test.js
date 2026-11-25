@@ -811,7 +811,7 @@ describe('EnginesView task integration', () => {
     let body = wrapper.find('.engine-modal-body')
     expect(body.exists()).toBe(true)
     expect(body.find('engine-build-settings-hint-stub').exists(), 'llama hint').toBe(true)
-    expect(body.find('.build-note--info').exists(), 'llama no note').toBe(false)
+    expect(body.find('.engine-modal-note').exists(), 'llama no note').toBe(false)
     expect(body.find('[data-testid="audio-check-updates"]').attributes('data-hint')).toBe(
       'Compare the installed ref to the latest stable release (vX.Y.Z).',
     )
@@ -854,8 +854,8 @@ describe('EnginesView task integration', () => {
     body = wrapper.find('.engine-modal-body')
     expect(body.exists()).toBe(true)
     expect(body.find('engine-build-settings-hint-stub').exists(), 'unsloth no hint').toBe(false)
-    expect(body.find('.build-note--info').exists(), 'unsloth note').toBe(true)
-    expect(body.find('.build-note--info').text()).toContain('not Unsloth Studio')
+    expect(body.find('.engine-modal-note').exists(), 'unsloth note').toBe(true)
+    expect(body.find('.engine-modal-note').text()).toContain('not Unsloth Studio')
     expect(body.find('[data-testid="audio-check-updates"]').attributes('data-hint')).toBe(
       'Compare the active mix tag to the latest unslothai/llama.cpp prebuilt.',
     )
@@ -871,5 +871,22 @@ describe('EnginesView task integration', () => {
     expect(body.findComponent(VersionTable).props('emptyMessage')).toBe(
       'No versions yet. Install a prebuilt using the option above.',
     )
+  })
+
+  it('renders the compact engine filter toolbar and resets both selects', async () => {
+    const wrapper = mountEnginesView()
+    await flushPromises()
+
+    expect(wrapper.get('.engine-filters').classes()).toContain('compact-toolbar')
+    expect(wrapper.get('.engine-filters').findAll('.compact-field')).toHaveLength(2)
+    await wrapper.get('#engine-task-filter').setValue('audio')
+    await wrapper.get('#engine-hardware-filter').setValue('cpu')
+    expect(wrapper.get('#engine-task-filter').element.value).toBe('audio')
+    expect(wrapper.get('#engine-hardware-filter').element.value).toBe('cpu')
+
+    await wrapper.get('.engine-filters__reset').trigger('click')
+    expect(wrapper.get('#engine-task-filter').element.value).toBe('all')
+    expect(wrapper.get('#engine-hardware-filter').element.value).toBe('all')
+    wrapper.unmount()
   })
 })

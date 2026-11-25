@@ -11,13 +11,19 @@ Studio's audio integration composes engine and model metadata into the contract 
 | Model-aware `--inspect` and help       | Preferred/per-task endpoints, model capabilities, inputs, option declarations, and execution constraints.                                                  |
 | `model_specs/<family>.json`            | Package identity, tasks, typed load/session/request options, defaults, ranges, dependencies, and voice metadata.                                           |
 | Configured model-spec override         | Explicit metadata/execution spec source for the configured model.                                                                                          |
-| Available structured upstream contract | Additional observed facts composed by the upstream adapter.                                                                                                |
+| Upstream contract document             | An optional machine-readable document (audio.cpp#852) detected behind `AUDIO_CPP_UPSTREAM_CONTRACT=1`; the composer overlays it when supplied.             |
 
 `backend/engines/audio_cpp/integration/contract_registry.py` defines Studio-owned operations and transport policy. `composer.py` overlays observations and assigns provenance. Observed facts take precedence over the corresponding registry floor. Contradictions produce drift warnings and a descriptor fingerprint rather than silent reinterpretation.
 
-Activation requires a successful structured loader JSON probe. A build without the required interface receives an actionable activation error. Engine and model scans use structured metadata and executable help; a model name or organization does not establish task, family, instruction support, or access permissions.
+Activation requires a successful structured loader JSON probe, which upstream provides from v0.9.1 onward. A build without the required interface receives an actionable activation error. Engine and model scans use structured metadata and executable help; a model name or organization does not establish task, family, instruction support, or access permissions.
 
-`GET /api/audio-cpp/contract` returns the version descriptor with operations, task/family routing, defaults keys, fingerprints, and warnings. Model parameter registries also contain `request_policy`: operation identity, relevant paths, body shape, defaults key, instructions policy, and provenance. The frontend's `useAudioContract` reads that descriptor.
+## Validated engine versions and compatibility
+
+Studio reports a compatibility ceiling rather than silently assuming every new audio.cpp release works. The ceiling is `0.9.5` (`VALIDATED_ENGINE_VERSION` in `backend/engines/audio_cpp/compatibility.py`): the newest release whose source build, Linux prebuilt, loader/inspect surface, and real inference were actually exercised. `0.9.6` and newer install and run unblocked but are reported unsupported until they are exercised the same way. Releases below 0.9.1 are unsupported because they cannot answer the activation probe. A branch, commit, or local build remains `unknown` instead of being guessed newer or older. The 0.9.4/0.9.5 Linux prebuilts need glibc 2.43, which the Ubuntu 26.04 Studio image provides; on an older host they fall back to a source build.
+
+The classification rides the existing read paths: `GET /api/audio-cpp/status` and `GET /api/audio-cpp/contract` add `engine_version`, `validated_through`, `engine_supported` (`true`/`false`/`null`), and `engine_compat_note`; status additionally reports `upstream_contract_available`. Audio.cpp rows in `GET /api/llama-versions` carry the same compatibility fields for the Engines view. Nothing in the classification blocks install, activation, or inference. See [audio.cpp engine compatibility](audio-cpp-compatibility.md) for the durable matrix, the source-build path, and what "unknown" means.
+
+`GET /api/audio-cpp/contract` returns the version descriptor with operations, task/family routing, defaults keys, fingerprints, warnings, and the compatibility fields above. Model parameter registries also contain `request_policy`: operation identity, relevant paths, body shape, defaults key, instructions policy, and provenance. The frontend's `useAudioContract` reads that descriptor.
 
 ## Operation and transport model
 
@@ -53,6 +59,10 @@ Engine installation is separate from package acquisition. A prepared audio model
 Studio scans server flags from `audiocpp_server --help`, families from loader JSON, and model behavior from model-aware inspection/help and specs. Engine scans refresh the catalog. Model profiles are cached separately for each engine/model.
 
 When help and a spec describe the same option, structured spec metadata owns its type, default, range, and explicit enum values. Named enum presets use help-expanded choices. Model-specific options absent from the spec remain available; unrelated global CLI flags do not populate request forms merely because they appear in global help.
+
+A default is taken from the help text only when the text states one as a value (`default cuda`, `default: 4`, `; default false`). Prose that describes derived behavior is documentation, not a default: `--backend-impl`'s "default preserves existing dispatch" must not become the string default `preserves`. `backend/engines/scan/default_fragments.py` owns that rule, and the launch path uses it defensively: a process-flag value copied from such prose (for example `backend_impl: "preserves"` in a model config saved before the rule existed) is dropped with a warning instead of failing the engine start (`CUDA0: implementation 'preserves' is not supported`). Model config saves only persist parameter values the form holds explicitly, so an untouched field keeps falling back to the engine's own default instead of becoming an explicit launch flag.
+
+`engine_params_catalog.yaml` holds megabytes of help text once engines are scanned, so its I/O never runs under the store-wide lock: writers merge into a private copy of the cached document and replace the file atomically under their own lock, readers rely on the atomic replace plus the mtime cache, and activation's catalog write runs in a worker thread. A cold re-parse on the event loop used to stall every API request (and the proxy) for seconds right after an install finished; startup now warms the cache in a thread so the first status/model request is a dict lookup.
 
 A `model_spec_override` file or directory supplies model metadata and the matching engine-execution override. Profile cache identity includes spec contents, CLI binary identity, load options, and the override. A spec/binary/load-setting change can require inspection even when an engine version label stays the same.
 
@@ -105,9 +115,54 @@ Transcription upload transport converts input to WAV only when the engine contra
 
 Alignments and transcription details use concrete engine-specific routing when required by the operation contract. The target uses the stable native model identity. Errors remain explicit for unsupported model selection, missing assets, invalid paths, absent schema, activation failure, or request-field validation.
 
+## Build configuration contract
+
+Studio builds audio.cpp from source with CMake. The build-option catalog is engine data (`build_options` in `backend/engines/definitions/audio_cpp.yaml`), exported into the generated definition and rendered as `-D` argv by `backend/engines/audio_cpp/build_options.py`. The catalog tracks upstream `0xShug0/audio.cpp` `v0.9.5` and the commits after it — source-tree alignment, not a validated runtime claim: the validated runtime ceiling is `0.9.5` (see [compatibility](audio-cpp-compatibility.md)).
+
+Every option the catalog knows is passed explicitly on every configure, including the ones left at their default. A build therefore never inherits an upstream default it did not ask for, which matters because upstream defaults are host-dependent (`ENGINE_ENABLE_METAL` defaults ON on Apple hosts) and forks can change them. `backend/tests/test_audio_build_options.py` pins the catalog against the complete upstream variable list, so a new upstream knob fails the suite until the definition grows the matching entry.
+
+| Group           | Options                                                                                                                                                                                                                                                            |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Backends        | `ENGINE_ENABLE_CUDA`, `HIP`, `VULKAN`, `WEBGPU`, `SYCL`, `METAL`; plus `ENGINE_ENABLE_RKNN` (Rockchip NPU path) and `ENGINE_ENABLE_NEON` (ARM)                                                                                                                     |
+| Backend tuning  | `ENGINE_ENABLE_CUDA_GRAPHS`, `ENGINE_HIP_STRIX_HALO_OPTIMIZATIONS`                                                                                                                                                                                                 |
+| CPU             | `ENGINE_ENABLE_NATIVE_CPU`, `ENGINE_ENABLE_OPENMP`, `ENGINE_ENABLE_LLAMAFILE`, `ENGINE_ENABLE_CPU_ALL_VARIANTS`                                                                                                                                                    |
+| Artifacts       | `ENGINE_BUILD_TESTS`, `EXTENDED_TESTS`, `MODEL_TESTS`, `EXAMPLES`, `WARMBENCH`, `AUDIOCPP_DEPLOYMENT_BUILD`, `AUDIOCPP_BUILD_NATIVE_MODEL_MANAGER`, `AUDIOCPP_USE_SYSTEM_OPENSSL`, `AUDIOCPP_BUILD_C_API`, `AUDIOCPP_BUILD_C_API_STATIC`, `AUDIOCPP_STATIC_ESPEAK` |
+| Server adapters | `AUDIOCPP_BUILD_SERVER_FRONTENDS`, `AUDIOCPP_SERVER_FRONTEND_MODULES`, `AUDIOCPP_SERVER_FRONTENDS_DIR`                                                                                                                                                             |
+| Model set       | `AUDIOCPP_MODEL_SET` (`full`/`core`/`custom`), `AUDIOCPP_MODELS`, `AUDIOCPP_ZONOS3_TEXTNORM`, `AUDIOCPP_ZONOS3_TEXTNORM_DIR`                                                                                                                                       |
+
+Test-only upstream cache variables (`AUDIOCPP_C_API_MODEL_ROOT`, `AUDIOCPP_RKNN_TEST_ENGINE`, `AUDIOCPP_GGML_SOURCE_DIR`) are deliberately not catalogued: they steer fixture paths, not a distributable build.
+
+Studio's supported backend set is CPU and CUDA (`build_options.supported_backends()`, reported as `supported_build_backends` on the status payload and in the build-options catalog). Every other upstream knob stays catalogued with `supported: false` so settings round-trip, the documentation and the UI stay honest, and every build pins it off; the UI disables those entries with the reason and validation refuses enabling them. `GET /api/audio-cpp/build-options` returns the catalog; `GET/PUT /api/audio-cpp/build-settings` persist it.
+
+Saving or building validates the combination and reports one message per problem (HTTP 422) instead of leaving the failure to a CMake configure log:
+
+- no catalogued-but-unsupported knob may be enabled (`metal`, `vulkan`, `webgpu`, `sycl`, `hip`, `rknn`, `neon`); `backend` itself is derived from the enabled backends and is never user-set;
+- CUDA and HIP are mutually exclusive, and the Strix Halo HIP tuning requires HIP (upstream `FATAL_ERROR`);
+- system OpenSSL requires the native model manager (upstream `FATAL_ERROR`);
+- server frontend modules require server frontends, which in turn require the frontend package directory (upstream `FATAL_ERROR`); the default directory is the `external/audio.cpp-server-frontends` submodule that the checkout already initializes;
+- ZONOS3 text normalization requires a `zyphra-textnorm` checkout;
+- a `custom` model set requires at least one model target.
+
+The derived backend also drives the runtime environment: only a CUDA build gets the managed toolkit on `PATH`/library path. A non-CUDA build still launches with the per-device/backend selection from its scanned server flags.
+
+### Build resource budget
+
+A source build runs on the same host that serves the API and the proxy. An audio.cpp CUDA build is the heaviest compile Studio starts (two architecture variants per translation unit), so the build never passes a bare `cmake --build --parallel`: CMake would forward it to Ninja, which sizes itself from the CPUs it can see (cores + 2), including inside a container whose CPU quota is much smaller. That oversubscription turns the box into a swapping host where the API, the proxy and SSE streams stop answering until the build ends.
+
+`backend/concurrency.py::build_job_budget` is the single policy:
+
+- CPUs this process may actually use (affinity and cgroup quota), not `os.cpu_count()`;
+- memory headroom minus a reserve for the control plane and any resident model (an eighth of the headroom, at least 4 GiB), measured from `MemAvailable` and capped by the cgroup limit, at 8 GiB per job for CUDA and 4 GiB elsewhere;
+- `STUDIO_BUILD_JOBS` overrides the result for hosts that want a different tradeoff, and an explicit **Parallel jobs** setting in Build settings always wins.
+
+The same policy sizes the llama-family source build (`get_optimal_build_threads`) and the venv fork builds (`fork_build.safe_jobs`), so no engine build can claim more of the host than the others leave it.
+
+
 ## Embedded engine UI policy
 
-The engine's embedded server UI requires an active installation that explicitly records `build_server_frontends` enabled. Unknown/prebuilt build settings default off. The parameter registry, saved configuration policy, generated `ui`/`ui_management` values, and custom-argument validation enforce the applicable build policy.
+The engine's embedded server UI is served by `audiocpp_server --ui` and is built unconditionally upstream since `v0.9.4`; it is _not_ gated by a CMake option. Studio's current policy keeps it off unless the active installation records `build_server_frontends` enabled: the parameter registry marks `ui`/`ui_management` unsupported, the saved model configuration is forced off, and custom arguments cannot inject the flags.
+
+That gate predates the cataloguing of `AUDIOCPP_BUILD_SERVER_FRONTENDS` as what upstream means by it (optional in-process transport adapters such as MP3 encoding and audio decoding). Two follow-ups are intentionally not part of the build-option work: the gate should follow the scanned `--ui` row instead of a build toggle, and process-scope server-config values (`ui`, `ui_management`, `max_loaded_models`, `busy_timeout_ms`, …) need to be written into the generated sidecar; today only `device`, `threads`, `lazy_load`, `voice_dir`, `model_spec_override` and the UI-off policy reach it.
 
 Studio's Audio workspace uses its own browser/request components and operates independently of the embedded engine UI switch.
 
@@ -115,6 +170,6 @@ Studio's Audio workspace uses its own browser/request components and operates in
 
 Contract responses carry fingerprints, provenance, and drift warnings. Activation returns operation/progress data and capability changes; model configuration surfaces relevant review/scan hints. Runtime failures expose task/request details and the real model's process logs.
 
-Tests cover the operation registry, composer precedence, drift warnings, structured activation gate, contract endpoint, model-spec overrides, typed enums/ranges, profile invalidation, request scope conflicts, instructions policy, package acquisition, file declarations, voice handling, server UI policy, and generic forms. Environment-driven discovery tests can use `AUDIO_CPP_CLI`, `AUDIO_CPP_MODEL`, and `AUDIO_CPP_SOURCE` for a suitable actual runtime/model.
+Tests cover the operation registry, composer precedence, drift warnings, structured activation gate, contract endpoint, compatibility parsing/ceiling and status/contract/row fields, upstream-contract probe behavior, model-spec overrides, typed enums/ranges, profile invalidation, request scope conflicts, instructions policy, package acquisition, file declarations, voice handling, server UI policy, and generic forms. Environment-driven discovery tests can use `AUDIO_CPP_CLI`, `AUDIO_CPP_MODEL`, and `AUDIO_CPP_SOURCE` for a suitable actual runtime/model; the upstream-contract probe is opt-in with `AUDIO_CPP_UPSTREAM_CONTRACT=1`.
 
 Successful metadata composition does not itself measure audio quality, latency, device support, or every family's runtime correctness. Those outcomes require the applicable engine/model/assets and a successful request on the target machine.
