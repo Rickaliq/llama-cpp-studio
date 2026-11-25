@@ -1085,22 +1085,9 @@ SCANNER_KIND_DISPATCH = {
 # into catalog sections, reusing the same parsers so the catalog shape is
 # identical. A new scanner kind still requires an explicit entry — the
 # dispatch vocabulary does not grow by accident.
-DEFINITION_HELP_PARSERS = {
-    "infr_help": parse_infr_serve_help_to_sections,
-    "koboldcpp_help": parse_koboldcpp_help_to_sections,
-    "maya_ik2_help": parse_maya_ik2_help_to_sections,
-    "llama_help": parse_llama_help_to_sections,
-    "lmdeploy_help": lambda text, engine: lmdeploy_params_to_sections(
-        parse_lmdeploy_api_server_help(text)
-    ),
-    "vllm_help": lambda text, engine: vllm_params_to_sections(parse_vllm_serve_help(text)),
-    "sglang_help": lambda text, engine: sglang_params_to_sections(
-        parse_sglang_launch_server_help(text)
-    ),
-    "sglang_diffusion_help": lambda text, engine: sglang_params_to_sections(
-        parse_sglang_diffusion_help(text)
-    ),
-}
+from backend.engines.plugins import get_help_parsers
+
+DEFINITION_HELP_PARSERS = get_help_parsers()
 
 
 def scan_definition_engine_version(engine: str, version_row: dict) -> dict:

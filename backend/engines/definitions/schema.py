@@ -819,7 +819,9 @@ PROFILE_KEYS: FrozenSet[str] = frozenset(
 # the profile only declares the Studio-owned port flag (and an optional
 # prefix). A family profile may not ALSO declare the keys the mechanism
 # composes: a declared-but-ignored key is worse than an absent one.
-LAUNCH_FAMILIES: FrozenSet[str] = frozenset({"gguf_llama_server", "infr_gguf_server", "profile_bundle_http_server", "koboldcpp_gguf_server", "maya_ik2_gguf_server"})
+from backend.engines.plugins import SUPPORTED_LAUNCH_FAMILIES
+
+LAUNCH_FAMILIES: FrozenSet[str] = SUPPORTED_LAUNCH_FAMILIES
 FAMILY_PROFILE_KEYS: FrozenSet[str] = frozenset(
     {
         "description",

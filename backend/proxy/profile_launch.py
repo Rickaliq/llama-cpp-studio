@@ -215,43 +215,11 @@ def compile_profile_launch(
                 stable_id=stable_id,
                 engine=engine,
             )
-        if family == "infr_gguf_server":
-            from backend.proxy.infr_launch import compile_infr_gguf_launch
+        from backend.engines.plugins import get_launch_compiler
 
-            return compile_infr_gguf_launch(
-                definition=definition,
-                spec=spec,
-                model=model,
-                config=config,
-                stable_id=stable_id,
-                engine=engine,
-            )
-        if family == "profile_bundle_http_server":
-            from backend.proxy.profile_bundle_launch import compile_profile_bundle_launch
-
-            return compile_profile_bundle_launch(
-                definition=definition,
-                spec=spec,
-                model=model,
-                config=config,
-                stable_id=stable_id,
-                engine=engine,
-            )
-        if family == "koboldcpp_gguf_server":
-            from backend.proxy.koboldcpp_launch import compile_koboldcpp_gguf_launch
-
-            return compile_koboldcpp_gguf_launch(
-                definition=definition,
-                spec=spec,
-                model=model,
-                config=config,
-                stable_id=stable_id,
-                engine=engine,
-            )
-        if family == "maya_ik2_gguf_server":
-            from backend.proxy.maya_ik2_launch import compile_maya_ik2_gguf_launch
-
-            return compile_maya_ik2_gguf_launch(
+        compiler = get_launch_compiler(str(family or ""))
+        if compiler is not None:
+            return compiler(
                 definition=definition,
                 spec=spec,
                 model=model,
