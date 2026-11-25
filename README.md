@@ -16,6 +16,8 @@ Studio is a browser-based workspace for acquiring models, managing inference eng
 | [Audio contract and discovery](docs/audio-cpp-discovery.md)  | Engine/model metadata, task routing, typed options, voices, and audio transport.                                                                        |
 | [Engineering reference](docs/current-engineering-status.md)  | Persistence, authorization boundaries, operations, source modules, and reproducible quality checks.                                                     |
 | [Documentation index](docs/README.md)                        | Navigation across the current reference documentation.                                                                                                  |
+| [Custom engines & fork additions](docs/custom-engines-and-fork.md) | Fork-specific engines (`koboldcpp`, `moe4all`, `strata`, `maya_ik2`), unified `plugins.py` registry, and multi-GPU detection.                      |
+| [Collaborator guide (AI & human)](AGENTS.md)                 | Architecture boundaries, plugin contract, and verification commands for AI and human contributors (see also [CONTRIBUTING.md](CONTRIBUTING.md)).         |
 
 ## Workspaces
 
@@ -43,6 +45,9 @@ Model configuration stores a separate section per engine. Forms use discovered f
 | SGLang SXM2       | `sglang_sxm2`   | safetensors snapshots                                    | Dedicated source/build workflow and managed Python/CUDA. |
 | SGLang SM70       | `sglang_sm70`   | safetensors snapshots                                    | Dedicated source/build workflow and managed Python/CUDA. |
 | audio.cpp         | `audio_cpp`     | Prepared audio packages and discovered audio GGUF models | Source/CMake build.                                      |
+| KoboldCpp         | `koboldcpp`     | GGUF                                                     | Externally managed binary (`koboldcpp_gguf_server`).     |
+| MoE4All           | `moe4all`       | GGUF                                                     | Externally managed `infr` binary (`infr_gguf_server`).   |
+| Strata            | `strata`        | Prepared bundles                                         | Externally managed bundle runtime.                       |
 
 Available tasks and hardware support depend on the installed engine and selected model. Studio reads the engine registry, executable help, and structured metadata to expose applicable controls.
 
