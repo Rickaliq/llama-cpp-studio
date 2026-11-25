@@ -16,39 +16,117 @@ import socket
 import subprocess
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping, Optional
 
 import httpx
 
+from backend.logging_config import get_logger
 from backend.proxy.launch_spec import LaunchSpec
 from backend.proxy.studio.ring import EventRing
 
+logger = get_logger(__name__)
+
 
 class RegistryError(RuntimeError):
-    pass
+    """Engine start/lifecycle failure.
+
+    ``http_status`` and ``payload()`` are optional overrides: a subclass may pin
+    a status and a structured body (admission refusals do), while plain errors
+    keep the historical queue-vs-engine status split.
+    """
+
+    @classmethod
+    def response(cls, exc: BaseException) -> tuple[int, dict[str, Any], str]:
+        """HTTP status, JSON body and observation code for a failed start.
+
+        Admission refusals carry their own status, code and structured detail
+        (for example ``INSUFFICIENT_VRAM``); ordinary engine errors keep the
+        queue-vs-engine split and the byte-compatible ``{"error": ...}`` body.
+        """
+        status = int(getattr(exc, "http_status", 0) or 0)
+        if not status:
+            status = 429 if "queue" in str(exc) or "maximum loaded" in str(exc) else 502
+        payload = exc.payload() if hasattr(exc, "payload") else {"error": str(exc)}
+        trace_code = payload.get("code") or (
+            "queue_timeout" if status == 429 else "engine_unavailable"
+        )
+        return status, dict(payload), str(trace_code).lower()
 
 
-# Engines explicitly known to expose no /health route. These engines may use
-# a validated liveness fallback after a persistent /health 404.
+# Captured payloads are deliberately memory-only: they are never written to the
+# accounting database or logs. The window is small and bodies are capped so an
+# operator can replay a recent request without turning the proxy into a
+# transcript store.
+CAPTURE_MAX_REQUESTS = 200
+CAPTURE_MAX_BODY_BYTES = 256 * 1024
+_SENSITIVE_CAPTURE_HEADERS = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "api-key",
+        "x-goog-api-key",
+        "anthropic-api-key",
+        "openai-api-key",
+        "x-auth-token",
+        "x-access-token",
+    }
+)
+_SENSITIVE_HEADER_TOKENS = frozenset(
+    {"authorization", "auth", "key", "token", "secret", "cookie", "password"}
+)
+_SKIP_CAPTURE_HEADERS = frozenset(
+    {"host", "content-length", "connection", "transfer-encoding", "accept-encoding"}
+)
+
+
+def _is_sensitive_capture_header(name: str) -> bool:
+    if name in _SENSITIVE_CAPTURE_HEADERS:
+        return True
+    # Vendor keys use names such as x-custom-api-key or x-goog-api-key.
+    tokens = [part for part in re.split(r"[-_]+", name) if part]
+    return any(token in _SENSITIVE_HEADER_TOKENS for token in tokens)
+
+
+def _sanitize_captured_headers(headers: Any) -> tuple[dict[str, str], list[str]]:
+    if not isinstance(headers, Mapping):
+        return {}, []
+    captured: dict[str, str] = {}
+    redacted: list[str] = []
+    for name, value in headers.items():
+        lower = str(name).strip().lower()
+        if not lower:
+            continue
+        if _is_sensitive_capture_header(lower):
+            redacted.append(lower)
+            continue
+        if lower in _SKIP_CAPTURE_HEADERS:
+            continue
+        captured[lower] = str(value)
+    return captured, redacted
+
+
+def _capture_body_text(body: Any) -> tuple[Optional[str], bool]:
+    if body is None or body == b"" or body == "":
+        return None, False
+    if isinstance(body, bytes):
+        raw = body
+    else:
+        raw = str(body).encode("utf-8", "replace")
+    truncated = len(raw) > CAPTURE_MAX_BODY_BYTES
+    return raw[:CAPTURE_MAX_BODY_BYTES].decode("utf-8", "replace"), truncated
+
+
+# Engines explicitly known to expose no /health route. For these only, a
+# persistent 404 on /health falls back to probing "/" for liveness. Every
+# engine Studio ships (llama.cpp family, vllm, sglang, lmdeploy, audio.cpp)
+# serves /health that reports load completion, so this set is deliberately
+# empty; add an engine id only after verifying it has no health endpoint.
 ENGINES_WITHOUT_HEALTH_ROUTE: frozenset[str] = frozenset()
-
-
-def _kobold_model_list_loaded(response: Any) -> bool:
-    """KoboldCpp readiness requires its model list to explicitly report loaded."""
-    try:
-        payload = response.json()
-    except (ValueError, AttributeError):
-        return False
-    models = payload.get("data") if isinstance(payload, dict) else None
-    return isinstance(models, list) and any(
-        isinstance(model, dict)
-        and bool(str(model.get("id") or "").strip())
-        and isinstance(model.get("status"), dict)
-        and str(model["status"].get("value") or "").lower() == "loaded"
-        for model in models
-    )
 
 
 @dataclass
@@ -59,7 +137,6 @@ class Generation:
     process: subprocess.Popen[str]
     engine_id: str = ""
     engine_install_id: str = ""
-    health_requires_loaded: bool = False
     created_at: float = field(default_factory=time.time)
     stats_since: float = field(default_factory=time.time)
     ready: bool = False
@@ -90,6 +167,12 @@ class Generation:
     exit_code: Optional[int] = None
     failure_reason: Optional[str] = None
     log_truncated_bytes: int = 0
+    # Additive GPU observation: filled by the admission observer once the
+    # generation is ready, and by admission itself for the selected devices.
+    vram: Optional[dict[str, Any]] = None
+    # Opaque VRAM-admission reservation; released on terminate (and at ready
+    # observation, when the probe already reflects the loaded model).
+    admission_token: Optional[Any] = field(default=None, repr=False)
     _partial_log: dict[str, int] = field(default_factory=dict, repr=False)
     _terminated: bool = False
     _terminate_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -116,6 +199,7 @@ class ProcessRegistry:
         max_loaded_models: Optional[int] = None,
         per_model_concurrency: Optional[int] = None,
         queue_timeout: float = 30.0,
+        admission: Optional[Any] = None,
     ) -> None:
         self._launch_factory = launch_factory
         self.readiness_timeout = readiness_timeout
@@ -139,10 +223,21 @@ class ProcessRegistry:
         self._generations: dict[int, Generation] = {}
         self.activities: EventRing[dict[str, Any]] = EventRing(1000)
         self.requests: EventRing[dict[str, Any]] = EventRing(100)
+        # Request-id -> captured method/path/headers/body for replay/export.
+        # Bounded and in-memory only (never persisted by accounting).
+        self.replay_payloads: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._closed = False
         self._reaper: Optional[asyncio.Task[None]] = None
         self._background: set[asyncio.Task[None]] = set()
         self._observer: Optional[Callable[[LaunchSpec, str, int], None]] = None
+        # VRAM admission runs after the LaunchSpec is known and before any
+        # process is spawned. It is optional so CPU-only and test registries are
+        # unchanged; ``off`` is the manager's default.
+        self._admission = admission
+        if admission is not None:
+            binder = getattr(admission, "bind_activity", None)
+            if binder is not None:
+                binder(self._record_admission_activity)
 
     def set_launch_observer(
         self, observer: Optional[Callable[[LaunchSpec, str, int], None]]
@@ -249,6 +344,7 @@ class ProcessRegistry:
             "exit_code": item.exit_code if item.exit_code is not None else exited,
             "failure_reason": item.failure_reason,
             "log_truncated_bytes": item.log_truncated_bytes,
+            "vram": item.vram,
             "loading_progress": item.loading_progress,
             "draining": item.draining,
             "inflight": item.inflight,
@@ -287,6 +383,41 @@ class ProcessRegistry:
             "p95_decode_tokens_per_second": percentile(0.95, decode_samples),
         }
 
+    def remember_replay_payload(
+        self,
+        request_id: str,
+        *,
+        model: str,
+        method: str,
+        path: str,
+        headers: Any,
+        body: Any,
+    ) -> None:
+        """Keep a bounded, memory-only capture for replay and export."""
+        if not request_id:
+            return
+        captured_headers, redacted = _sanitize_captured_headers(headers)
+        captured_body, body_truncated = _capture_body_text(body)
+        if not captured_headers and captured_body is None:
+            return
+        self.replay_payloads[request_id] = {
+            "id": request_id,
+            "model": str(model or ""),
+            "method": str(method or "POST").upper(),
+            "path": str(path or "/"),
+            "headers": captured_headers,
+            "redacted_headers": redacted,
+            "body": captured_body,
+            "body_truncated": body_truncated,
+        }
+        self.replay_payloads.move_to_end(request_id)
+        while len(self.replay_payloads) > CAPTURE_MAX_REQUESTS:
+            self.replay_payloads.popitem(last=False)
+
+    def replay_payload(self, request_id: str) -> Optional[dict[str, Any]]:
+        payload = self.replay_payloads.get(str(request_id or ""))
+        return dict(payload) if payload else None
+
     async def enter_request(self, model_id: str) -> None:
         if not self.per_model_concurrency:
             return
@@ -317,6 +448,8 @@ class ProcessRegistry:
         method: str = "",
         path: str = "",
         observation: Mapping[str, Any] | None = None,
+        request_headers: Mapping[str, Any] | None = None,
+        request_body: Any = None,
     ) -> None:
         """Consume a finalized observation, never raw pre-normalization counts.
 
@@ -329,9 +462,10 @@ class ProcessRegistry:
         if output_tokens is not None and record.get("output_tokens") is None:
             record["output_tokens"] = output_tokens
         timestamp = time.time()
+        request_id = record.get("id") or uuid.uuid4().hex
         self.requests.append(
             {
-                "id": record.get("id") or uuid.uuid4().hex,
+                "id": request_id,
                 "completed_at": timestamp,
                 "model": generation.model_id,
                 "engine": generation.engine_id,
@@ -349,6 +483,15 @@ class ProcessRegistry:
                 "pid": generation.process.pid,
             }
         )
+        if request_headers is not None or request_body is not None:
+            self.remember_replay_payload(
+                request_id,
+                model=generation.model_id,
+                method=method,
+                path=path,
+                headers=request_headers,
+                body=request_body,
+            )
         generation.request_count += 1
         generation.error_count += int(status >= 400)
         generation.client_error_count += int(400 <= status < 500)
@@ -468,12 +611,27 @@ class ProcessRegistry:
             if self._closed:
                 raise RegistryError("proxy registry is closed")
             self._ensure_capacity(model_id)
-            spec, revision, artifact_dir = await self._launch_factory(model_id)
+            # A live generation keeps its launch. Desired/published changes are
+            # applied by stopping this process first (restart_now, reload,
+            # unload); demand must never replace a healthy engine underneath
+            # in-flight work. This also means an engine version install cannot
+            # make the next proxied request try to start a second engine while
+            # the first still owns the GPU.
             current = self.active(model_id)
-            if current and current.revision == revision and not current.draining:
+            if current is not None and not current.draining:
                 return current
+            spec, revision, artifact_dir = await self._launch_factory(model_id)
             self._ensure_capacity(model_id)
-            replacement = await self._start(spec, revision, artifact_dir)
+            admission_token = await self._admit_launch(spec)
+            try:
+                replacement = await self._start(
+                    spec, revision, artifact_dir, admission_token=admission_token
+                )
+            except BaseException:
+                # A refusal raised by admission itself never reaches here; this
+                # covers a failed spawn/readiness after a reservation was made.
+                self._release_admission(admission_token)
+                raise
             old = self._active.get(model_id)
             self._active[model_id] = replacement
             self._failed.pop(model_id, None)
@@ -545,7 +703,12 @@ class ProcessRegistry:
         await asyncio.gather(*(self._terminate(item) for item in generations))
 
     async def _start(
-        self, spec: LaunchSpec, revision: str, artifact_dir: Optional[str]
+        self,
+        spec: LaunchSpec,
+        revision: str,
+        artifact_dir: Optional[str],
+        *,
+        admission_token: Optional[Any] = None,
     ) -> Generation:
         port = _free_loopback_port()
         argv = [_resolve_arg(item, port, artifact_dir) for item in spec.argv]
@@ -570,7 +733,7 @@ class ProcessRegistry:
             process,
             spec.engine_id,
             engine_install_id=getattr(spec, "engine_install_id", "") or "",
-            health_requires_loaded=bool(getattr(spec, "health_requires_loaded", False)),
+            admission_token=admission_token,
         )
         # A restarted build may expose a different optional counting route than
         # the previous process under the same nominal revision. Re-probe once.
@@ -618,6 +781,7 @@ class ProcessRegistry:
         generation.last_used = time.monotonic()
         self._starting.pop(spec.model_id, None)
         self._emit("ready", generation)
+        self._observe_admission(generation)
         return generation
 
     async def _wait_ready(self, generation: Generation) -> None:
@@ -643,32 +807,7 @@ class ProcessRegistry:
                     await asyncio.sleep(0.1)
                     continue
                 if 200 <= response.status_code < 300:
-                    if generation.health_requires_loaded:
-                        try:
-                            health = response.json()
-                        except ValueError:
-                            health = None
-                        if not isinstance(health, dict) or health.get("loaded") is not True:
-                            await asyncio.sleep(0.1)
-                            continue
                     return
-                if generation.engine_id == "koboldcpp" and response.status_code == 404:
-                    # KoboldCpp's documented OpenAI model-list endpoint
-                    # identifies whether a model is loaded. Require the
-                    # explicit loaded state; do not treat its Web UI root or
-                    # an id-only model list as readiness for Studio routing.
-                    try:
-                        models_response = await client.get(generation.upstream + "/v1/models")
-                    except httpx.HTTPError:
-                        models_response = None
-                    if (
-                        models_response is not None
-                        and 200 <= models_response.status_code < 300
-                        and _kobold_model_list_loaded(models_response)
-                    ):
-                        return
-                    await asyncio.sleep(0.1)
-                    continue
                 if allow_root_fallback and response.status_code == 404:
                     consecutive_missing += 1
                     if consecutive_missing % 50 == 1:
@@ -845,12 +984,60 @@ class ProcessRegistry:
                 self._starting.pop(generation.model_id, None)
             if self._active.get(generation.model_id) is generation:
                 self._active.pop(generation.model_id, None)
+            self._release_admission(generation.admission_token)
+            generation.admission_token = None
             self._emit("failed" if generation.failure_reason else "stopped", generation)
 
     def _emit(self, kind: str, generation: Generation) -> None:
         self.activities.append(
             {"type": kind, **self.describe(generation), "timestamp": time.time()}
         )
+
+    def _record_admission_activity(self, kind: str, payload: Mapping[str, Any]) -> None:
+        """Append a VRAM admission activity to the same ring as lifecycle events."""
+        self.activities.append({"type": kind, **dict(payload), "timestamp": time.time()})
+
+    async def _admit_launch(self, spec: LaunchSpec) -> Optional[Any]:
+        """Run the optional admission check before any process is spawned."""
+        if self._admission is None:
+            return None
+        admit = getattr(self._admission, "admit", None)
+        if admit is None:
+            return None
+        from backend.proxy.studio.vram import VramAdmissionError
+
+        try:
+            return await admit(spec)
+        except VramAdmissionError:
+            raise
+        except Exception:  # noqa: BLE001 - admission must never block every start
+            logger.exception("VRAM admission check failed; admitting the launch")
+            return None
+
+    def _release_admission(self, token: Optional[Any]) -> None:
+        if self._admission is None or token is None:
+            return
+        release = getattr(self._admission, "release", None)
+        if release is None:
+            return
+        try:
+            release(token)
+        except Exception:  # noqa: BLE001 - teardown must not fail on observation state
+            logger.debug("Could not release VRAM admission reservation", exc_info=True)
+
+    def _observe_admission(self, generation: Generation) -> None:
+        """Sample the ready-time VRAM delta without delaying readiness."""
+        observer = getattr(self._admission, "observe_ready", None)
+        if observer is None or generation.admission_token is None:
+            return
+
+        async def run() -> None:
+            try:
+                await observer(generation, generation.admission_token)
+            except Exception:  # noqa: BLE001 - observation is additive, never fatal
+                logger.debug("VRAM ready observation failed", exc_info=True)
+
+        self._spawn_background(run())
 
     def _ensure_reaper(self) -> None:
         if self.idle_ttl and (self._reaper is None or self._reaper.done()):
@@ -886,8 +1073,6 @@ def _resolve_arg(item: object, port: int, artifact_dir: Optional[str]) -> str:
         return item
     if isinstance(item, Mapping) and item.get("runtime") == "port":
         return str(port)
-    if isinstance(item, Mapping) and item.get("runtime") == "loopback_addr":
-        return f"127.0.0.1:{port}"
     if isinstance(item, Mapping) and item.get("artifact") and artifact_dir:
         name = str(item["artifact"])
         candidate = os.path.realpath(os.path.join(artifact_dir, name))
