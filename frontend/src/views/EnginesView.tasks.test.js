@@ -180,6 +180,7 @@ function mountEnginesView({ withHeader = false } = {}) {
 
 describe('EnginesView task integration', () => {
   beforeEach(() => {
+    localStorage.removeItem('llama-studio.engines.hidden')
     toastAdd.mockReset()
     fetchAll.mockReset()
     fetchCudaStatus.mockReset()
@@ -249,6 +250,42 @@ describe('EnginesView task integration', () => {
       source_ref_type: 'branch',
     })
     scanEngineParams.mockResolvedValue({ ok: true, param_count: 12 })
+  })
+
+  it('persists manual engine visibility and offers a way to reveal hidden engines', async () => {
+    const wrapper = mountEnginesView()
+    const card = wrapper.find('.engine-card-visibility')
+    expect(card.exists()).toBe(true)
+    await card.trigger('click')
+    expect(JSON.parse(localStorage.getItem('llama-studio.engines.hidden'))).toContain('llama_cpp')
+    expect(card.text()).toBe('Show engine')
+
+    await wrapper.find('.engine-filters__hidden-toggle input').setValue(true)
+    expect(wrapper.find('.engine-card-visibility').exists()).toBe(true)
+    await wrapper.find('.engine-card-visibility').trigger('click')
+    expect(JSON.parse(localStorage.getItem('llama-studio.engines.hidden'))).not.toContain('llama_cpp')
+    wrapper.unmount()
+  })
+
+  it('renders non-lifecycle descriptors as neutral externally managed cards with visibility controls', async () => {
+    enginesStore.engineDescriptors = [
+      { id: 'strata', label: 'Strata', generic_lifecycle: false, installed_versions: 2, active_version: 'q4', runnable: true },
+      { id: 'moe4all', label: 'MoE4All', generic_lifecycle: false, installed_versions: 0, active_version: null, runnable: false },
+    ]
+    const wrapper = mountEnginesView()
+    await flushPromises()
+    const cards = wrapper.findAll('.descriptor-fallback')
+    expect(cards).toHaveLength(2)
+    expect(cards[0].text()).toContain('2 installed versions')
+    expect(cards[0].text()).toContain('Active: q4')
+    expect(cards[0].text()).toContain('Managed externally')
+    expect(cards[0].text()).toContain('Register this engine with the external manager; start its models in Studio.')
+    expect(cards[1].text()).toContain('Not currently runnable')
+
+    await cards[0].find('.engine-card-visibility').trigger('click')
+    expect(JSON.parse(localStorage.getItem('llama-studio.engines.hidden'))).toContain('strata')
+    expect(cards[0].find('.engine-card-visibility').text()).toBe('Show engine')
+    wrapper.unmount()
   })
 
   it('starts sync and points users at notifications toast', async () => {

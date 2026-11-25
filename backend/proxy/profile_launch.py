@@ -202,12 +202,56 @@ def compile_profile_launch(
 
     family = str(spec.get("launch_family") or "")
     if family:
-        # Declared mechanism: the family composes executable/cwd/argv/env/
-        # identities, so this interpreter must not also evaluate a binding.
-        from backend.proxy import gguf_launch
+        # Declared mechanisms compose executable/cwd/argv/env/identities, so
+        # this interpreter must not also evaluate a binding.
+        if family == "gguf_llama_server":
+            from backend.proxy import gguf_launch
 
-        if gguf_launch.launch_family_supported(family):
             return gguf_launch.compile_gguf_family_launch(
+                definition=definition,
+                spec=spec,
+                model=model,
+                config=config,
+                stable_id=stable_id,
+                engine=engine,
+            )
+        if family == "infr_gguf_server":
+            from backend.proxy.infr_launch import compile_infr_gguf_launch
+
+            return compile_infr_gguf_launch(
+                definition=definition,
+                spec=spec,
+                model=model,
+                config=config,
+                stable_id=stable_id,
+                engine=engine,
+            )
+        if family == "profile_bundle_http_server":
+            from backend.proxy.profile_bundle_launch import compile_profile_bundle_launch
+
+            return compile_profile_bundle_launch(
+                definition=definition,
+                spec=spec,
+                model=model,
+                config=config,
+                stable_id=stable_id,
+                engine=engine,
+            )
+        if family == "koboldcpp_gguf_server":
+            from backend.proxy.koboldcpp_launch import compile_koboldcpp_gguf_launch
+
+            return compile_koboldcpp_gguf_launch(
+                definition=definition,
+                spec=spec,
+                model=model,
+                config=config,
+                stable_id=stable_id,
+                engine=engine,
+            )
+        if family == "maya_ik2_gguf_server":
+            from backend.proxy.maya_ik2_launch import compile_maya_ik2_gguf_launch
+
+            return compile_maya_ik2_gguf_launch(
                 definition=definition,
                 spec=spec,
                 model=model,
@@ -425,6 +469,15 @@ def profile_executable(engine: str, active: Mapping[str, Any]) -> str:
             field="executable",
         )
     spec = definition.profile("")
+    if str(spec.get("launch_family") or "") == "infr_gguf_server":
+        from backend.proxy.launch_spec import LaunchCompileError
+
+        binary = str((active or {}).get("binary_path") or "")
+        if binary and not os.path.isabs(binary):
+            binary = os.path.join(APP_ROOT, binary)
+        if not binary or not (os.path.isfile(binary) and os.access(binary, os.X_OK)):
+            raise LaunchCompileError(f"{engine} infr executable unavailable", field="executable")
+        return binary
     return _resolve_executable(spec, engine, active)
 
 

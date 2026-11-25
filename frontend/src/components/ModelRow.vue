@@ -22,6 +22,42 @@
             :value="formatLabel(quant.format)"
             severity="secondary"
           />
+          <Tag
+            v-if="quant.mmproj_filename || quant.capabilities?.vision || quant.input_modalities?.includes('image')"
+            value="Vision"
+            severity="info"
+            v-tooltip.top="quant.mmproj_filename ? `mmproj: ${quant.mmproj_filename}` : 'Vision capable model'"
+          />
+          <Tag
+            v-if="quant.mtp_filename || quant.capabilities?.mtp_draft"
+            value="MTP draft"
+            severity="info"
+            v-tooltip.top="quant.mtp_filename || 'MTP draft companion available'"
+          />
+          <Tag
+            v-if="quant.dflash_filename"
+            value="DFlash"
+            severity="info"
+            v-tooltip.top="quant.dflash_filename"
+          />
+          <Tag
+            v-if="quant.dspark_filename"
+            value="DSpark"
+            severity="info"
+            v-tooltip.top="quant.dspark_filename"
+          />
+          <Tag
+            v-if="quant.is_embedding_model || quant.config?.embedding || quant.capabilities?.embeddings || quant.tasks?.includes('embeddings') || quant.pipeline_tag === 'feature-extraction'"
+            value="Embeddings"
+            severity="info"
+          />
+          <Tag
+            v-for="engine in customCompatibleEngines"
+            :key="`custom-engine-${engine}`"
+            :value="customEngineLabel(engine)"
+            severity="secondary"
+            v-tooltip.top="`GGUF format is accepted by the registered ${customEngineLabel(engine)} adapter; model-specific behavior may vary`"
+          />
         </div>
       </div>
     </div>
@@ -120,6 +156,18 @@ const { quant, isStarting, isStopping } = toRefs(props)
 const proxyStatus = computed(() => String(quant.value?.status || quant.value?.run_state || '').toLowerCase())
 const runtimeState = computed(() => modelRuntimeState(quant.value))
 const isAudioModel = computed(() => isAudioPackage(quant.value))
+const customEngineLabels = {
+  moe4all: 'MoE4All',
+  koboldcpp: 'KoboldCpp',
+  strata: 'Strata',
+  bonsai: 'Bonsai',
+}
+const customCompatibleEngines = computed(() =>
+  (quant.value?.compatible_engines || []).filter((engine) => engine in customEngineLabels),
+)
+function customEngineLabel(engine) {
+  return customEngineLabels[engine] || engine
+}
 
 const emit = defineEmits(['start', 'stop', 'configure', 'audio', 'delete', 'connect'])
 </script>

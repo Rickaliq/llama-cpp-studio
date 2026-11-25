@@ -796,6 +796,12 @@
                     >
                       {{ file.variantPrefix }} variant
                     </span>
+                    <span
+                      v-if="searchFormat === 'gguf' && file.kind === 'quant' && file.artifactLabel"
+                      class="file-subtext"
+                    >
+                      {{ file.artifactLabel }} model variant
+                    </span>
                     <span v-else-if="file.subtext" class="file-subtext">
                       {{ file.subtext }}
                     </span>
@@ -2106,19 +2112,7 @@ function findCatalogDownloadedModel(result, variant) {
     if (result.artifact_format === 'safetensors') {
       return findDownloadedSafetensorsBundle(hfId) || null
     }
-    return (
-      modelStore.allQuantizations.find(
-        (model) =>
-          model.huggingface_id === hfId &&
-          (model.quantization === variant.id ||
-            model.quantization === variant.label ||
-            (Array.isArray(variant.files) &&
-              variant.files.some((file) => {
-                const name = typeof file === 'string' ? file : file?.filename
-                return name && model.filename === name
-              }))),
-      ) || null
-    )
+    return findDownloadedQuantization(hfId, { quantizationKey: variant.id }, variant.files || []) || null
   }
   if (result.provider === 'audio_cpp') {
     const packageId = catalogAudioPackageId(result, variant)
@@ -2658,10 +2652,7 @@ function catalogVariantHasActiveDownloadTask(result, variant) {
       return true
     }
     const quantKey = variant.id
-    return (
-      meta.quantization === quantKey ||
-      meta.quantization === result.metadata?.raw?.quantizations?.[quantKey]?.quantization
-    )
+    return meta.quantization === quantKey
   })
 }
 
@@ -2709,7 +2700,7 @@ async function downloadHfCatalogVariant(result, variant) {
       const dsparkOption = getSelectedDsparkOption(dsparkFile, selectedDspark)
       await modelStore.downloadGgufBundle(
         hfId,
-        variant.id,
+        quantMeta.quantization_key || quantMeta.quantization || variant.id,
         files,
         pipelineTag,
         selectedProjector || null,
@@ -2720,6 +2711,9 @@ async function downloadHfCatalogVariant(result, variant) {
         dflashOption?.size || 0,
         selectedDspark || null,
         dsparkOption?.size || 0,
+        ...(quantMeta.artifact_key || quantMeta.artifact_label
+          ? [quantMeta.artifact_key || null, quantMeta.artifact_label || null]
+          : []),
       )
     }
     toast.add({
@@ -2958,8 +2952,10 @@ async function loadFiles(modelId) {
       const quantEntries = Object.entries(result.quantizations || {}).map(([key, entry]) => ({
         key,
         kind: 'quant',
-        quantizationKey: key,
+        quantizationKey: entry.quantization_key || key.split('::', 1)[0],
         quantization: entry.quantization || '',
+        artifactKey: entry.artifact_key || '',
+        artifactLabel: entry.artifact_label || '',
         variantPrefix: entry.variant_prefix || '',
         size: entry.total_size || 0,
         projectorOptions,
@@ -3094,6 +3090,9 @@ async function downloadFile(result, file) {
         selectedMtpOption?.size || 0,
         selectedDflash || null,
         selectedDflashOption?.size || 0,
+        null,
+        0,
+        file.artifactKey || null,
       )
     } else if (searchFormat.value === 'safetensors') {
       await modelStore.downloadSafetensorsBundle(modelId, file.files || [])
@@ -3526,7 +3525,7 @@ function configureDownloaded(modelId, file) {
 
 // ── Helpers ────────────────────────────────────────────────
 function getDownloadKey(modelId, file) {
-  return `${modelId}:${file.quantizationKey || file.filename}`
+  return `${modelId}:${file.key || file.artifactKey || file.quantizationKey || file.filename}`
 }
 
 function downloadTaskIdentityMatches(task, modelId, file) {
@@ -3536,6 +3535,7 @@ function downloadTaskIdentityMatches(task, modelId, file) {
   if (meta.huggingface_id && meta.huggingface_id !== modelId) return false
 
   if (searchFormat.value === 'gguf' && file.kind === 'quant') {
+    if (meta.artifact_key && meta.artifact_key !== file.artifactKey) return false
     if (meta.model_id && file.modelId && meta.model_id === file.modelId) {
       return true
     }
@@ -3599,19 +3599,19 @@ function reconcilePendingDownloadsForHfId(hfId) {
 }
 
 function getProjectorSelectionKey(modelId, file) {
-  return `${modelId}:${file.quantizationKey || file.filename}:projector`
+  return `${modelId}:${file.key || file.artifactKey || file.quantizationKey || file.filename}:projector`
 }
 
 function getMtpSelectionKey(modelId, file) {
-  return `${modelId}:${file.quantizationKey || file.filename}:mtp`
+  return `${modelId}:${file.key || file.artifactKey || file.quantizationKey || file.filename}:mtp`
 }
 
 function getDflashSelectionKey(modelId, file) {
-  return `${modelId}:${file.quantizationKey || file.filename}:dflash`
+  return `${modelId}:${file.key || file.artifactKey || file.quantizationKey || file.filename}:dflash`
 }
 
 function getDsparkSelectionKey(modelId, file) {
-  return `${modelId}:${file.quantizationKey || file.filename}:dspark`
+  return `${modelId}:${file.key || file.artifactKey || file.quantizationKey || file.filename}:dspark`
 }
 
 function parseDsparkLabel(filename) {
@@ -3933,11 +3933,20 @@ function hasDsparkSelectionChanged(modelId, file) {
 }
 
 function findDownloadedQuantization(hfId, entry, files = []) {
+  const expected = files.map((file) => (typeof file === 'string' ? file : file?.filename)).filter(Boolean)
   return modelStore.allQuantizations.find(
-    (m) =>
-      m.huggingface_id === hfId &&
-      ((entry.quantization && m.quantization === entry.quantization) ||
-        files.some((file) => m.filename === file.filename)),
+    (m) => {
+      if (m.huggingface_id !== hfId) return false
+      const recorded = (m.files || [])
+        .filter((file) => typeof file === 'string' || !file.role || ['weight', 'shard'].includes(file.role))
+        .map((file) => (typeof file === 'string' ? file : file.filename))
+        .filter(Boolean)
+      if (m.filename && !recorded.includes(m.filename)) recorded.push(m.filename)
+      if (expected.length && recorded.length) {
+        return expected.length === recorded.length && expected.every((name) => recorded.includes(name))
+      }
+      return Boolean(entry.quantizationKey && m.quantization === entry.quantizationKey)
+    },
   )
 }
 
@@ -3956,7 +3965,9 @@ function findDownloadedModel(hfId, filename) {
 function formatResultItemLabel(entry, result) {
   if (!entry) return ''
   if (entry.kind === 'quant') {
-    return entry.quantizationKey || entry.quantization || 'Unknown'
+    return entry.artifactLabel
+      ? `${entry.quantization || 'Unknown'} · ${entry.artifactLabel}`
+      : entry.quantizationKey || entry.quantization || 'Unknown'
   }
   return result.modelId || result.id
 }

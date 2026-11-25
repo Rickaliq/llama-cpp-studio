@@ -88,15 +88,14 @@ def _categories() -> tuple:
 BUILD_OPTIONS: tuple[BuildOptionDef, ...] = _options()
 CATEGORIES: Sequence[Dict[str, Any]] = _categories()
 
-# ggml/llama enable some backends by host default (Metal on macOS). Studio only
-# ships CPU + CUDA, so these are always forced off at build time.
+# ggml/llama enable some backends by host default (Metal on macOS). Backends
+# omitted from the engine definition catalogs are forced off at build time.
 _LLAMA_ENGINES = frozenset({"llama_cpp"})
 _IK_ENGINES = frozenset({"ik_llama"})
 _BOTH_ENGINES = frozenset({"llama_cpp", "ik_llama"})
 UNSUPPORTED_BACKEND_CMAKE: tuple[tuple[str, frozenset], ...] = (
     ("GGML_HIP", _BOTH_ENGINES),
     ("GGML_HIPBLAS", _IK_ENGINES),
-    ("GGML_VULKAN", _BOTH_ENGINES),
     ("GGML_METAL", _BOTH_ENGINES),
     ("GGML_SYCL", _BOTH_ENGINES),
     ("GGML_OPENCL", _LLAMA_ENGINES),

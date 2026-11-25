@@ -176,13 +176,15 @@ def test_download_gguf_bundle_route_validates_and_schedules(monkeypatch):
         scheduled = background_tasks.tasks[0]
         assert scheduled.func is models_routes._spawn_background_operation
         assert scheduled.args[1] is model_downloads.download_gguf_bundle_task
-        assert scheduled.args[-1] is None  # DSpark
-        assert scheduled.args[-2] is None  # DFlash
-        assert scheduled.args[-3] == {
+        assert scheduled.args[-1] is None  # Artifact label
+        assert scheduled.args[-2] is None  # Artifact key
+        assert scheduled.args[-3] is None  # DSpark
+        assert scheduled.args[-4] is None  # DFlash
+        assert scheduled.args[-5] == {
             "filename": "MTP/mtp-model-Q8_0.gguf",
             "size": 8,
         }
-        assert scheduled.args[-4] == {"filename": "mmproj-F16.gguf", "size": 5}
+        assert scheduled.args[-6] == {"filename": "mmproj-F16.gguf", "size": 5}
         assert pm.created[0][0] == "download"
     finally:
         model_downloads.active_downloads.clear()
@@ -544,6 +546,8 @@ def test_download_gguf_bundle_task_and_projector_task_update_store(
         file_size,
         pipeline_tag=None,
         aggregate_size=False,
+        artifact_key=None,
+        artifact_label=None,
     ):
         observed["recorded"].append((hf_id, filename, file_size, aggregate_size))
         return store_obj.get_model(model_id), {"metadata": {}}

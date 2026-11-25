@@ -278,6 +278,8 @@ export const useModelStore = defineStore('models', () => {
     dflashSize = 0,
     dsparkFilename = null,
     dsparkSize = 0,
+    artifactKey = null,
+    artifactLabel = null,
   ) {
     const { data } = await axios.post('/api/models/gguf/download-bundle', {
       huggingface_id: huggingfaceId,
@@ -292,6 +294,8 @@ export const useModelStore = defineStore('models', () => {
       dflash_size: dflashSize,
       dspark_filename: dsparkFilename,
       dspark_size: dsparkSize,
+      artifact_key: artifactKey,
+      artifact_label: artifactLabel,
     })
     return data
   }

@@ -138,12 +138,21 @@ def compatible_engines_for_record(record: Dict[str, Any]) -> List[str]:
     artifact_format = _record_format(record)
     inferred = inferred_engines_for_artifact_format(artifact_format)
 
+    # Bonsai's PQ/PTQ tensor encodings are not ordinary llama.cpp GGUF
+    # quantizations. Do not infer generic GGUF engine support for them. A
+    # dedicated Bonsai engine may opt in by registering under a bonsai ID.
+    quantization = str(record.get("quantization") or "").strip().upper()
+    if quantization.startswith(("PQ", "PTQ")):
+        inferred = [engine_id for engine_id in inferred if "bonsai" in engine_id.lower()]
+
     explicit = record.get("compatible_engines")
     explicit_ids = (
         [item for item in _unique_strings(explicit or []) if item in ENGINE_REGISTRY]
         if isinstance(explicit, (list, tuple, set))
         else []
     )
+    if quantization.startswith(("PQ", "PTQ")):
+        explicit_ids = [engine_id for engine_id in explicit_ids if "bonsai" in engine_id.lower()]
 
     artifact = record.get("artifact") if isinstance(record.get("artifact"), dict) else {}
     package_kind = (

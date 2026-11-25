@@ -19,6 +19,7 @@ from backend.feature_flags import launch_manifests_enabled
 
 SCHEMA_VERSION = 1
 PORT_PLACEHOLDER = {"runtime": "port"}
+LOOPBACK_ADDR_PLACEHOLDER = {"runtime": "loopback_addr"}
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SECRET_NAME_RE = re.compile(
     r"(TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY|PRIVATE_KEY)",
@@ -108,6 +109,7 @@ class LaunchSpec:
     env: EnvSpec
     artifacts: Dict[str, Any] = field(default_factory=dict)
     file_identities: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    health_requires_loaded: bool = False
 
     def document(self) -> Dict[str, Any]:
         artifact_digests = {
@@ -124,6 +126,7 @@ class LaunchSpec:
             "env": {"set": self.env.set, "unset": list(self.env.unset)},
             "artifacts": artifact_digests,
             "file_identities": self.file_identities,
+            "health_requires_loaded": self.health_requires_loaded,
         }
 
 
@@ -218,6 +221,8 @@ def format_argv(executable: str, argv: Sequence[ArgvItem]) -> str:
     for item in argv:
         if isinstance(item, dict) and item.get("runtime") == "port":
             tokens.append("${PORT}")
+        elif isinstance(item, dict) and item.get("runtime") == "loopback_addr":
+            tokens.append("127.0.0.1:${PORT}")
         elif isinstance(item, dict) and item.get("artifact"):
             tokens.append("${artifact:" + str(item["artifact"]) + "}")
         else:
@@ -339,6 +344,18 @@ def _use_model_name(model, config, stable_id: str, engine: str) -> Optional[str]
 
     definition = profile_launch.profile_launch_definition(engine)
     if definition is not None:
+        profile = definition.profile("")
+        if str(profile.get("launch_family") or "") == "profile_bundle_http_server":
+            from backend.proxy.profile_bundle_launch import upstream_model_name
+
+            return upstream_model_name(model, stable_id)
+        if (
+            str(profile.get("launch_family") or "")
+            and str(profile.get("upstream_model_name") or "stable_id") == "model_stem"
+        ):
+            from backend.proxy.infr_launch import upstream_model_name
+
+            return upstream_model_name(definition, model, stable_id)
         if profile_launch.profile_model_source(definition) == "huggingface_id":
             value = _model_attr(model, "huggingface_id")
             return str(value) if value else None

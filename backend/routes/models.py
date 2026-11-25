@@ -7,6 +7,7 @@ import os
 import time
 import asyncio
 import hashlib
+import re
 
 from backend.data_store import (
     find_model_name_conflicts,
@@ -50,6 +51,8 @@ from backend.models.hub import (
     is_dspark_filename as _hf_is_dspark_filename,
     is_mmproj_filename as _hf_is_mmproj_filename,
     is_mtp_filename as _hf_is_mtp_filename,
+    gguf_artifact_key,
+    extract_quantization_key,
 )
 from backend.logging_config import describe_error, get_logger
 from backend.models.files import iter_model_files, remove_model_files, upsert_model_file
@@ -108,6 +111,43 @@ def _mark_runtime_changed() -> None:
 
 
 router = APIRouter()
+
+
+def _normalize_huggingface_repo(value):
+    """Return canonical owner/repo from a repo ID or recognized HF page URL."""
+    from urllib.parse import urlparse
+    import re
+
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(400, detail="Hugging Face source must be a repository ID or URL")
+    value = value.strip()
+    if not value:
+        return None
+    if "://" in value:
+        parsed = urlparse(value)
+        try:
+            has_port = parsed.port is not None
+        except ValueError as exc:
+            raise HTTPException(400, detail="Hugging Face source URL has an invalid port") from exc
+        if (parsed.scheme != "https" or parsed.hostname not in {"huggingface.co", "www.huggingface.co"}
+                or parsed.username or parsed.password or has_port or parsed.query or parsed.fragment):
+            raise HTTPException(400, detail="Hugging Face source URL must be an HTTPS huggingface.co repository URL")
+        parts = parsed.path.strip("/").split("/")
+        if len(parts) == 2:
+            value = "/".join(parts)
+        elif len(parts) >= 4 and parts[2] in {"tree", "blob", "resolve"}:
+            # This stores repository identity only, not revision or file proof.
+            value = "/".join(parts[:2])
+        else:
+            raise HTTPException(400, detail="Hugging Face URL must identify a repository or recognized repo page")
+    if value.startswith("/") or value.endswith("/") or "\\" in value:
+        raise HTTPException(400, detail="Hugging Face source must be owner/repository")
+    parts = value.split("/")
+    if len(parts) != 2 or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}", part) for part in parts):
+        raise HTTPException(400, detail="Hugging Face source must be owner/repository")
+    return "/".join(parts)
 
 
 def _is_mmproj_filename(filename: Optional[str]) -> bool:
@@ -215,6 +255,8 @@ def _record_cached_companion(
 
 async def _remove_model_from_disk(store, model: dict, *, retire_references: bool = False) -> None:
     """Delete managed model files before dropping the store row."""
+    if (model.get("source") or {}).get("provider") == "local" and model.get("local_artifacts"):
+        return
     fmt = (model.get("format") or "gguf").lower()
     hf_id = model.get("huggingface_id")
     mid = model.get("id")
@@ -772,8 +814,14 @@ async def list_models():
                 {
                     "id": model.get("id"),
                     "name": model.get("display_name") or model.get("name"),
-                    # No filename persisted for GGUF models; a model is a single logical
-                    # entity per (huggingface_id, quantization).
+                    # Keep the remote weight ledger visible to clients so an
+                    # artifact can be matched by its exact files, including
+                    # same-quantization variants and multipart shards.
+                    "files": [
+                        {"filename": entry.get("filename"), "size": entry.get("size", 0)}
+                        for entry in iter_model_files(model, roles={"weight", "shard"})
+                    ],
+                    "artifact_key": model.get("artifact_key"),
                     "file_size": file_size,
                     "quantization": model.get("quantization"),
                     "format": model.get("format")
@@ -824,6 +872,145 @@ async def list_models():
         return result
 
     return await run_blocking(build_catalog)
+
+
+@router.post("/import-local")
+async def import_local_model(request: dict):
+    """Register existing files by reference; Studio never owns the originals."""
+    from pathlib import Path
+    from datetime import datetime, timezone
+    import re
+    from backend.data_store import DuplicateIdentifierError
+
+    roots = [Path(item).resolve() for item in os.environ.get(
+        "STUDIO_LOCAL_MODEL_ROOTS",
+        "/media/rick/Big Fast/0-Stacks/localai-platform/runtime-models",
+    ).split(":") if item]
+
+    def checked_path(value, label):
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(400, detail=f"{label} path is required")
+        path = Path(value.strip())
+        if not path.is_absolute():
+            raise HTTPException(400, detail=f"{label} must be an absolute path")
+        path = path.resolve()
+        if not any(path.is_relative_to(root) for root in roots):
+            raise HTTPException(400, detail=f"{label} is outside the configured model folders")
+        if not path.is_file() or path.suffix.lower() != ".gguf":
+            raise HTTPException(400, detail=f"{label} must be an existing GGUF file")
+        try:
+            with path.open("rb") as f:
+                if f.read(4) != b"GGUF":
+                    raise HTTPException(400, detail=f"{label} is not a GGUF file")
+        except OSError as exc:
+            raise HTTPException(400, detail=f"Cannot read {label}: {exc}") from exc
+        return path
+
+    weight = checked_path(request.get("weight_path"), "Model")
+    if re.search(r"-\d{5}-of-\d{5}\.gguf$", weight.name, re.I):
+        raise HTTPException(400, detail="Split GGUF models are not supported by this importer")
+    if "mmproj" in weight.name.lower():
+        raise HTTPException(400, detail="Choose a model weight, not a projector")
+    paths = {"weight": str(weight)}
+    for role in ("mmproj", "mtp"):
+        raw = request.get(role + "_path")
+        if raw:
+            companion = checked_path(raw, role.upper())
+            if str(companion) in paths.values():
+                raise HTTPException(400, detail="Each artifact must be a different file")
+            if role not in companion.name.lower():
+                raise HTTPException(400, detail=f"{role.upper()} filename must identify its role")
+            paths[role] = str(companion)
+    name = str(request.get("name") or weight.stem).strip()
+    if not name or len(name) > 200:
+        raise HTTPException(400, detail="Model name must be between 1 and 200 characters")
+    model_id = "local-" + hashlib.sha256(str(weight).encode()).hexdigest()[:20]
+    files = [{"filename": Path(path).name, "role": role, "size": Path(path).stat().st_size}
+             for role, path in paths.items()]
+    hf_repo = _normalize_huggingface_repo(
+        request.get("huggingface_repo", request.get("source_repository"))
+    )
+    source = {"provider": "local", "id": model_id}
+    if hf_repo:
+        source["huggingface_repo"] = hf_repo
+    # Bonsai's PQ/PTQ types are distinct from similarly named llama.cpp Q types.
+    bonsai_quant = re.search(r"(?i)(?:^|[-_.])(PTQ\d+_\d+|PQ\d+_\d+)(?=[-_.]|$)", weight.name)
+    quantization = bonsai_quant.group(1).upper() if bonsai_quant else extract_quantization(weight.name) or "local"
+    record = {"id": model_id, "display_name": name, "base_model_name": name,
+              "format": "gguf", "quantization": quantization,
+              "source": source,
+              "local_artifacts": paths, "files": files,
+              "file_size": weight.stat().st_size, "downloaded_at": datetime.now(timezone.utc).isoformat(),
+              "config": {}, "config_review_source": "local_import_unreviewed"}
+    for role in ("mmproj", "mtp"):
+        if role in paths:
+            record[role + "_filename"] = Path(paths[role]).name
+    # A local import should retain the same useful HF identity and task
+    # metadata as a library download whenever the supplied repository resolves.
+    # Keep local identity and paths authoritative; HF lookup is enrichment only.
+    if hf_repo:
+        try:
+            from backend.models.hub import get_model_details
+            details = await get_model_details(hf_repo)
+            pipeline = str(details.get("pipeline_tag") or "").strip()
+            tags = details.get("tags") if isinstance(details.get("tags"), list) else []
+            record.update({
+                "huggingface_id": hf_repo,
+                "author": details.get("author") or hf_repo.split("/", 1)[0],
+                "pipeline_tag": pipeline or None,
+                "hf_revision": details.get("sha") or None,
+                "hf_tags": tags,
+                "model_type": details.get("architecture") or "unknown",
+                "tasks": [pipeline] if pipeline else [],
+                "capabilities": {
+                    "text_generation": pipeline in {"text-generation", "text2text-generation"},
+                    "vision": bool(paths.get("mmproj")),
+                    "mtp_draft": bool(paths.get("mtp")),
+                    "embeddings": model_is_embedding({
+                        "pipeline_tag": pipeline,
+                        "huggingface_id": hf_repo,
+                        "display_name": name,
+                    }),
+                },
+                "is_embedding_model": model_is_embedding({
+                    "pipeline_tag": pipeline,
+                    "huggingface_id": hf_repo,
+                    "display_name": name,
+                }),
+            })
+        except Exception as exc:
+            logger.info("HF metadata lookup skipped for local import %s: %s", hf_repo, exc)
+    try:
+        from backend.services.model_autoconfig import maybe_initialize_new_gguf_model
+        store = get_store()
+        record = maybe_initialize_new_gguf_model(store, record)
+        store.add_model(record)
+    except DuplicateIdentifierError as exc:
+        raise HTTPException(409, detail="This model path is already in the library") from exc
+    _mark_runtime_changed()
+    return record
+
+
+@router.put("/{model_id:path}/source")
+@router.put("/{model_id:path}/source-huggingface")
+def update_local_model_huggingface_source(model_id: str, request: dict):
+    """Set or clear optional upstream Hugging Face provenance on a local model."""
+    value = request.get("huggingface_repo", request.get("source_repository"))
+    repo = _normalize_huggingface_repo(value)
+
+    store = get_store()
+    model = _get_model_or_404(store, model_id)
+    source = model.get("source") if isinstance(model.get("source"), dict) else {}
+    if source.get("provider") != "local" or not str(model_id).startswith("local-"):
+        raise HTTPException(400, detail="Hugging Face provenance can only be changed for local imports")
+    updated_source = dict(source)
+    if repo:
+        updated_source["huggingface_repo"] = repo
+    else:
+        updated_source.pop("huggingface_repo", None)
+    updated = store.update_model(model_id, {"source": updated_source})
+    _mark_runtime_changed()
+    return updated or {**model, "source": updated_source}
 
 
 @router.post("/search")
@@ -1174,6 +1361,8 @@ async def download_gguf_bundle(
 ):
     huggingface_id = request.get("huggingface_id")
     quantization = request.get("quantization")
+    artifact_key = request.get("artifact_key")
+    artifact_label = request.get("artifact_label")
     files = request.get("files") or []
     pipeline_tag = request.get("pipeline_tag")
     projector_filename = (request.get("mmproj_filename") or "").strip()
@@ -1219,6 +1408,50 @@ async def download_gguf_bundle(
     if not sanitized_files:
         raise HTTPException(status_code=400, detail="No valid files to download")
 
+    filenames = [entry["filename"] for entry in sanitized_files]
+    if len(set(filenames)) != len(filenames):
+        raise HTTPException(status_code=400, detail="Duplicate GGUF filenames are not allowed")
+    try:
+        artifact_keys = {gguf_artifact_key(filename, quantization) for filename in filenames}
+        file_quants = {extract_quantization_key(filename) for filename in filenames}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid GGUF bundle filenames") from exc
+    if len(artifact_keys) != 1 or "" in artifact_keys:
+        raise HTTPException(
+            status_code=400,
+            detail="GGUF bundle files must belong to one model variant",
+        )
+    derived_artifact_key = next(iter(artifact_keys))
+    if artifact_key and str(artifact_key) != derived_artifact_key:
+        raise HTTPException(
+            status_code=400,
+            detail="GGUF bundle files do not match the selected model variant",
+        )
+    # Guard stale clients that still submit two distinct same-quant variants
+    # as one bundle. A shard family must have one consistent total and every
+    # numbered part exactly once.
+    if len(file_quants) != 1 or next(iter(file_quants)).lower() != str(quantization).lower():
+        raise HTTPException(
+            status_code=400,
+            detail="GGUF bundle files must share the requested quantization",
+        )
+    shard_parts = []
+    for filename in filenames:
+        match = re.search(r"-(\d{5})-of-(\d{5})(?=\.gguf$)", filename, re.IGNORECASE)
+        if not match:
+            match = re.search(r"\.gguf\.part(\d+)of(\d+)$", filename, re.IGNORECASE)
+        shard_parts.append((int(match.group(1)), int(match.group(2))) if match else None)
+    if any(part is not None for part in shard_parts):
+        if any(part is None for part in shard_parts):
+            raise HTTPException(status_code=400, detail="GGUF bundle cannot mix sharded and single-file weights")
+        totals = {part[1] for part in shard_parts}
+        indices = [part[0] for part in shard_parts]
+        if len(totals) != 1 or len(indices) != len(set(indices)) or set(indices) != set(range(1, next(iter(totals)) + 1)):
+            raise HTTPException(status_code=400, detail="GGUF bundle must include every shard exactly once")
+    # Legacy clients may omit artifact_key. Keep their original model ID and
+    # cache key behavior while still validating that they submit one family.
+    artifact_key = str(artifact_key) if artifact_key else None
+
     projector_payload = None
     if projector_filename:
         declared_total += projector_size
@@ -1239,13 +1472,15 @@ async def download_gguf_bundle(
         declared_total += dspark_size
         dspark_payload = {"filename": dspark_filename, "size": dspark_size}
 
-    task_id = f"download_gguf_bundle_{huggingface_id.replace('/', '_')}_{quantization}_{int(time.time() * 1000)}"
+    artifact_suffix = hashlib.sha256(artifact_key.encode("utf-8")).hexdigest()[:12] if artifact_key else ""
+    task_id = f"download_gguf_bundle_{huggingface_id.replace('/', '_')}_{quantization}_{artifact_suffix}_{int(time.time() * 1000)}"
 
     try:
         await register_gguf_bundle_download(
             task_id=task_id,
             huggingface_id=huggingface_id,
             quantization=quantization,
+            artifact_key=artifact_key,
         )
     except ActiveDownloadConflict as exc:
         raise HTTPException(status_code=409, detail=exc.detail) from exc
@@ -1257,7 +1492,9 @@ async def download_gguf_bundle(
         {
             "huggingface_id": huggingface_id,
             "quantization": quantization,
-            "resource_key": f"hf:{huggingface_id}:gguf:{quantization}",
+            "artifact_key": artifact_key,
+            "resource_key": f"hf:{huggingface_id}:gguf:{quantization}"
+            + (f":{artifact_key}" if artifact_key else ""),
         },
         task_id=task_id,
     )
@@ -1277,6 +1514,8 @@ async def download_gguf_bundle(
         mtp_payload,
         dflash_payload,
         dspark_payload,
+        artifact_key,
+        artifact_label,
     )
 
     return {
@@ -1485,6 +1724,8 @@ async def update_model_projector(
 ):
     store = get_store()
     model = _get_model_or_404(store, model_id)
+    if (model.get("source") or {}).get("provider") == "local":
+        raise HTTPException(400, detail="Local companions must be selected during import")
     if (model.get("format")) != "gguf":
         raise HTTPException(status_code=400, detail="Projectors are only supported for GGUF models")
 
@@ -1568,6 +1809,8 @@ async def update_model_mtp(
 ):
     store = get_store()
     model = _get_model_or_404(store, model_id)
+    if (model.get("source") or {}).get("provider") == "local":
+        raise HTTPException(400, detail="Local companions must be selected during import")
     if (model.get("format")) != "gguf":
         raise HTTPException(status_code=400, detail="MTP drafts are only supported for GGUF models")
 
@@ -2019,6 +2262,7 @@ class SaveConfigTemplateBody(BaseModel):
     engines_scope: str = "all"
     use_saved: bool = False
     config: Optional[Dict[str, Any]] = None
+    expected_model_revision: Optional[str] = None
 
 
 class ApplyConfigTemplateBody(BaseModel):
@@ -2026,6 +2270,7 @@ class ApplyConfigTemplateBody(BaseModel):
     include_routing: Optional[bool] = None
     apply_engines: str = "active"
     persist: bool = False
+    expected_model_revision: Optional[str] = None
 
 
 @router.post("/{model_id:path}/config/save-template")
@@ -2036,24 +2281,30 @@ async def save_model_config_as_template(model_id: str, body: SaveConfigTemplateB
 
 def _save_model_config_as_template_payload(model_id: str, body: SaveConfigTemplateBody):
     store = get_store()
-    model = _get_model_or_404(store, model_id)
-    if body.use_saved or not body.config:
-        raw = model.get("config")
-    else:
-        raw = merge_model_config_put(model.get("config"), body.config)
-    try:
-        record = new_template_record(
-            name=body.name,
-            description=body.description,
-            config=normalize_model_config(raw),
-            source_model_id=model_id,
-            include_routing=body.include_routing,
-            engines_scope=body.engines_scope if body.engines_scope in ("all", "active") else "all",
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    store.add_config_template(record)
-    return record
+    with store.exclusive_documents():
+        if (
+            body.expected_model_revision is not None
+            and body.expected_model_revision != store.document_revision("models.yaml")
+        ):
+            raise HTTPException(status_code=409, detail="Model catalog changed; reload before saving the template")
+        model = _get_model_or_404(store, model_id)
+        if body.use_saved or not body.config:
+            raw = model.get("config")
+        else:
+            raw = merge_model_config_put(model.get("config"), body.config)
+        try:
+            record = new_template_record(
+                name=body.name,
+                description=body.description,
+                config=normalize_model_config(raw),
+                source_model_id=model_id,
+                include_routing=body.include_routing,
+                engines_scope=body.engines_scope if body.engines_scope in ("all", "active") else "all",
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        store.add_config_template(record)
+        return {**record, "source_model_revision": store.document_revision("models.yaml")}
 
 
 @router.post("/{model_id:path}/config/apply-template")
@@ -2064,48 +2315,53 @@ async def apply_model_config_template(model_id: str, body: ApplyConfigTemplateBo
 
 def _apply_model_config_template_payload(model_id: str, body: ApplyConfigTemplateBody):
     store = get_store()
-    model = _get_model_or_404(store, model_id)
-    template = store.get_config_template(body.template_id)
-    if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
-    include_routing = (
-        body.include_routing
-        if body.include_routing is not None
-        else bool(template.get("include_routing"))
-    )
-    apply_engines = body.apply_engines
-    if apply_engines not in ("active", "all", "set_engine"):
-        raise HTTPException(
-            status_code=400,
-            detail="apply_engines must be active, all, or set_engine",
+    with store.exclusive_documents():
+        model_revision = store.document_revision("models.yaml")
+        if body.expected_model_revision is not None and body.expected_model_revision != model_revision:
+            raise HTTPException(status_code=409, detail="Model catalog changed; reload before applying the template")
+        model = _get_model_or_404(store, model_id)
+        template = store.get_config_template(body.template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        include_routing = (
+            body.include_routing
+            if body.include_routing is not None
+            else bool(template.get("include_routing"))
         )
-    merged = apply_template_to_config(
-        model.get("config"),
-        template.get("config") or {},
-        include_routing=include_routing,
-        apply_engines=apply_engines,
-    )
-    if body.persist:
-        _validate_model_runtime_config(store, model, merged)
-        eff = effective_model_config(merged)
-        conflicts = find_model_name_conflicts(store, model_id, eff)
-        if conflicts:
-            names = ", ".join(sorted(set(conflicts)))
+        apply_engines = body.apply_engines
+        if apply_engines not in ("active", "all", "set_engine"):
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"Routing name or alias already used by another model: {names}. "
-                    "Each Studio proxy id and alias must be unique across the catalog."
-                ),
+                detail="apply_engines must be active, all, or set_engine",
             )
-        store.update_model(model_id, _reviewed_config_update(merged))
-        _mark_runtime_changed()
-    return {
-        "config": config_api_response(merged),
-        "persisted": bool(body.persist),
-        "template_id": body.template_id,
-        "template_name": template.get("name"),
-    }
+        merged = apply_template_to_config(
+            model.get("config"),
+            template.get("config") or {},
+            include_routing=include_routing,
+            apply_engines=apply_engines,
+        )
+        if body.persist:
+            _validate_model_runtime_config(store, model, merged)
+            eff = effective_model_config(merged)
+            conflicts = find_model_name_conflicts(store, model_id, eff)
+            if conflicts:
+                names = ", ".join(sorted(set(conflicts)))
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Routing name or alias already used by another model: {names}. "
+                        "Each Studio proxy id and alias must be unique across the catalog."
+                    ),
+                )
+            store.update_model(model_id, _reviewed_config_update(merged))
+            _mark_runtime_changed()
+        return {
+            "config": config_api_response(merged),
+            "persisted": bool(body.persist),
+            "template_id": body.template_id,
+            "template_name": template.get("name"),
+            "model_revision": store.document_revision("models.yaml"),
+        }
 
 
 class ActionConfirmBody(BaseModel):

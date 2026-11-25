@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, Dict, List, Optional
 
 from backend.engines.registry import GGUF_ENGINE_IDS, HF_SNAPSHOT_ENGINE_IDS
@@ -112,12 +113,19 @@ class HuggingFaceCatalogProvider:
             variants.append(
                 {
                     "id": name,
-                    "label": name,
+                    "label": (
+                        f"{metadata.get('quantization') or name} · {metadata.get('artifact_label')}"
+                        if metadata.get("artifact_label")
+                        else name
+                    ),
                     "method": "direct",
                     "installable": bool(filenames),
                     "files": filenames,
                     "size_bytes": cls._quant_size_bytes(metadata),
-                    "sharded": len(filenames) > 1,
+                    "sharded": bool(metadata.get("sharded")) or any(
+                        re.search(r"(?:-\d{5}-of-\d{5}\.gguf|\.gguf\.part\d+of\d+)$", filename, re.IGNORECASE)
+                        for filename in filenames
+                    ),
                 }
             )
         return variants

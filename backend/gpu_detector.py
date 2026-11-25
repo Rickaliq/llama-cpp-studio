@@ -609,8 +609,30 @@ def _collect_gpu_list() -> Dict:
         return _gpu_list_cpu_only()
 
     nvidia_info = _detect_nvidia_gpu_list()
+    amd_info = _detect_amd_gpu()
+    if nvidia_info and amd_info and amd_info.get("gpus"):
+        gpus = list(nvidia_info.get("gpus") or [])
+        offset = len(gpus)
+        for idx, gpu in enumerate(amd_info["gpus"]):
+            gpus.append({
+                "index": offset + idx,
+                "name": gpu.get("name", "AMD GPU"),
+                "uuid": gpu.get("uuid") or f"amd-{idx}",
+                "vendor": "amd",
+            })
+        return {**nvidia_info, "device_count": len(gpus), "gpus": gpus}
     if nvidia_info:
         return nvidia_info
+    if amd_info and amd_info.get("gpus"):
+        return {
+            "vendor": "amd",
+            "device_count": len(amd_info["gpus"]),
+            "gpus": [
+                {"index": idx, "name": g.get("name", "AMD GPU"), "uuid": g.get("uuid") or f"amd-{idx}", "vendor": "amd"}
+                for idx, g in enumerate(amd_info["gpus"])
+            ],
+            "cpu_only_mode": False,
+        }
 
     return _gpu_list_cpu_only()
 
@@ -633,10 +655,25 @@ def _collect_gpu_info() -> Dict[str, any]:
         return _cpu_only_response()
 
     nvidia_info = _detect_nvidia_gpu()
+    amd_info = _detect_amd_gpu()
+    if nvidia_info and amd_info and amd_info.get("gpus"):
+        gpus = list(nvidia_info.get("gpus") or [])
+        offset = len(gpus)
+        for idx, gpu in enumerate(amd_info["gpus"]):
+            entry = dict(gpu)
+            entry["index"] = offset + idx
+            entry.setdefault("vendor", "amd")
+            gpus.append(entry)
+        return {
+            **nvidia_info,
+            "device_count": len(gpus),
+            "gpus": gpus,
+            "total_vram": (nvidia_info.get("total_vram") or 0) + (amd_info.get("total_vram") or 0),
+            "available_vram": (nvidia_info.get("available_vram") or 0) + (amd_info.get("available_vram") or 0),
+        }
     if nvidia_info:
         return nvidia_info
 
-    amd_info = _detect_amd_gpu()
     if amd_info:
         return amd_info
 

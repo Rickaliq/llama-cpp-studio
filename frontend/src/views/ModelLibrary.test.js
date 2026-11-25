@@ -134,6 +134,43 @@ describe('ModelLibrary running glow', () => {
     wrapper.unmount()
   })
 
+  it('links the three known local models to their HF repositories without rewriting IDs', async () => {
+    modelStore.models = [
+      {
+        huggingface_id: 'abenzerps/Spark-X2.6-4B-Uncensored-GSQ-RCO-GGUF',
+        base_model_name: 'Spark X2.6',
+        quantizations: [{ id: 'spark-x26-4b-gsq-rco-iq4xs', quantization: 'IQ4_XS' }],
+      },
+      {
+        huggingface_id: 'local-e86183abe55f70c7c6ff',
+        source: { provider: 'local', huggingface_repo: 'tvall43/Qwen3.6-14B-A3B-vibetuned-GGUF' },
+        base_model_name: 'Qwen3.6 14B',
+        quantizations: [{ id: 'local-e86183abe55f70c7c6ff.q4_k_m', quantization: 'Q4_K_M' }],
+      },
+      {
+        huggingface_id: 'local-ff9fa99272b4a481dccf',
+        source: { provider: 'local', huggingface_repo: 'DavidAU/LFM2.5-24B-A2B-Turbo-Brilliance-50X-NEO-MAX-Imatrix-GGUF' },
+        base_model_name: 'LFM2.5 24B',
+        quantizations: [{ id: 'local-ff9fa99272b4a481dccf', quantization: 'IQ4_XS' }],
+      },
+    ]
+
+    const wrapper = mountLibrary()
+    await flushPromises()
+    const links = wrapper.findAll('.model-group .hf-link')
+    expect(links.map((link) => link.attributes('href'))).toEqual([
+      'https://huggingface.co/DavidAU/LFM2.5-24B-A2B-Turbo-Brilliance-50X-NEO-MAX-Imatrix-GGUF',
+      'https://huggingface.co/tvall43/Qwen3.6-14B-A3B-vibetuned-GGUF',
+      'https://huggingface.co/abenzerps/Spark-X2.6-4B-Uncensored-GSQ-RCO-GGUF',
+    ])
+    expect(modelStore.models.map((model) => model.huggingface_id)).toEqual([
+      'abenzerps/Spark-X2.6-4B-Uncensored-GSQ-RCO-GGUF',
+      'local-e86183abe55f70c7c6ff',
+      'local-ff9fa99272b4a481dccf',
+    ])
+    wrapper.unmount()
+  })
+
   it('marks a group running while a model is loading even if not yet active', async () => {
     modelStore.models = [
       {

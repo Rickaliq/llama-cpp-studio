@@ -16,6 +16,7 @@ from backend.engines.scan.help_parsers import (
     parse_audio_cpp_inspection,
     parse_audio_cpp_loaders_json,
     parse_llama_help_to_sections,
+    parse_infr_serve_help_to_sections,
     parse_lmdeploy_api_server_help,
     parse_sglang_diffusion_help,
     parse_sglang_launch_server_help,
@@ -24,6 +25,8 @@ from backend.engines.scan.help_parsers import (
     vllm_params_to_sections,
     sglang_params_to_sections,
 )
+from backend.engines.scan.koboldcpp_help import parse_koboldcpp_help_to_sections
+from backend.engines.scan.maya_ik2_help import parse_maya_ik2_help_to_sections
 from backend.engines.params import (
     get_model_profile_entry,
     get_version_entry,
@@ -1058,9 +1061,21 @@ def _scan_audio_cpp(store: Any, engine: str, version_row: dict, session: Any, ve
     return entry
 
 
+def _scan_strata_profile(store: Any, engine: str, version_row: dict, session: Any, ver: str) -> dict:
+    """Strata settings are owned by an explicit profile bundle, not generic CLI scans."""
+    entry = _error_entry(
+        str(version_row.get("binary_path") or ""),
+        "Strata uses validated profile-bundle controls; generic parameter scanning is disabled.",
+    )
+    entry["scan_error"] = None
+    entry["control_source"] = "strata_profile_bundle"
+    return entry
+
+
 SCANNER_KIND_DISPATCH = {
     "llama_help": _scan_llama_help,
     "audio_cpp": _scan_audio_cpp,
+    "strata_profile": _scan_strata_profile,
 }
 
 
@@ -1071,6 +1086,9 @@ SCANNER_KIND_DISPATCH = {
 # identical. A new scanner kind still requires an explicit entry — the
 # dispatch vocabulary does not grow by accident.
 DEFINITION_HELP_PARSERS = {
+    "infr_help": parse_infr_serve_help_to_sections,
+    "koboldcpp_help": parse_koboldcpp_help_to_sections,
+    "maya_ik2_help": parse_maya_ik2_help_to_sections,
     "llama_help": parse_llama_help_to_sections,
     "lmdeploy_help": lambda text, engine: lmdeploy_params_to_sections(
         parse_lmdeploy_api_server_help(text)

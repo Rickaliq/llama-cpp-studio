@@ -24,6 +24,7 @@ from backend.routes import (
     benchmarks,
     engines,
     engine_lifecycle,
+    engine_setup_defaults,
     model_catalog,
     model_config_templates,
     models,
@@ -436,6 +437,11 @@ async def redirect_collection_trailing_slash(request: Request, call_next):
 # Include routers
 app.include_router(engines.router, prefix="/api/engines", tags=["engines"])
 app.include_router(engine_lifecycle.router, prefix="/api/engines", tags=["engine-lifecycle"])
+app.include_router(
+    engine_setup_defaults.router,
+    prefix="/api/engine-setup-defaults",
+    tags=["engine-setup-defaults"],
+)
 
 for _audio_engine_id in audio_engine_ids():
     app.include_router(

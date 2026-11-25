@@ -864,7 +864,7 @@ def test_update_version_build_config_freezes_per_build_settings(
     assert stored["enable_cuda"] is True
     assert stored["enable_flash_attention"] is True
     assert stored["build_type"] == "Debug"
-    assert "enable_vulkan" not in stored
+    assert stored["enable_vulkan"] is False
     global_settings = store.get_engine_build_settings("llama_cpp")
     assert global_settings.get("flash_attention") is not True
 

@@ -14,7 +14,7 @@ from backend.engines.definitions import load_default_engine_definitions
 from backend.engines.definitions.schema import DefinitionError, validate_definition
 from backend.engines.registry import ENGINE_REGISTRY, EngineSpec, get_engine_spec
 from backend.models.config import DEFAULT_ENGINE, default_engine_for_format
-from backend.models.schema import _default_package_kind
+from backend.models.schema import _default_package_kind, compatible_engines_for_record
 
 
 def test_declared_model_compat_matches_the_historical_rules():
@@ -94,6 +94,14 @@ def test_a_declared_engine_can_declare_bundle_formats(monkeypatch):
     )
     monkeypatch.setitem(ENGINE_REGISTRY, "fixture_bundle", fake)
     assert _default_package_kind({"engine": "fixture_bundle"}, "mixed") == "prepared_bundle"
+
+
+def test_bonsai_pq_ptq_weights_do_not_inherit_generic_gguf_compatibility():
+    assert compatible_engines_for_record({"format": "gguf", "quantization": "PQ2_0"}) == []
+    assert compatible_engines_for_record({"format": "gguf", "quantization": "PTQ1_0"}) == []
+    assert "llama_cpp" in compatible_engines_for_record(
+        {"format": "gguf", "quantization": "IQ4_XS"}
+    )
 
 
 def _raw(**extra):

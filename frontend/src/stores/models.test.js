@@ -314,6 +314,8 @@ describe('models store', () => {
       dflash_size: 0,
       dspark_filename: null,
       dspark_size: 0,
+      artifact_key: null,
+      artifact_label: null,
     })
   })
 

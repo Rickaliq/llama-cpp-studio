@@ -2437,6 +2437,36 @@ def lmdeploy_params_to_sections(params: List[dict]) -> List[dict]:
     return group_params_into_sections(params)
 
 
+def parse_infr_serve_help_to_sections(text: str, engine: str) -> List[dict]:
+    """Parse MoE4All's Clap-style `infr serve --help` output.
+
+    Reuse the tested option-row parser, then expose only text-generation
+    controls Studio can apply to a single GGUF server. Studio owns address,
+    config-file selection, and all audio/embedding model arguments.
+    """
+    allowed = {
+        "--parallel",
+        "--set",
+        "--dev",
+        "--ctx",
+        "--ubatch",
+        "--threads",
+        "--temp",
+        "--top-k",
+        "--top-p",
+        "--seed",
+        "--max-new",
+        "--no-think",
+        "--think",
+        "--reasoning-effort",
+    }
+    params = parse_lmdeploy_api_server_help(text)
+    for param in params:
+        if not (set(param.get("flags") or ()) & allowed):
+            param["reserved"] = True
+    return lmdeploy_params_to_sections(params)
+
+
 def parse_sglang_launch_server_help(text: str) -> List[dict]:
     """Parse ``python -m sglang.launch_server --help`` argparse output."""
     return parse_lmdeploy_api_server_help(text)

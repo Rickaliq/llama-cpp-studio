@@ -1,0 +1,39 @@
+# Strata is an independent native runtime. Its profile bundle names a pack,
+# tokenizer, paired GGUF shards and expert profile; it is not a GGUF model.
+# The runtime is externally installed and must be manually registered.
+schema_version: 2
+id: strata
+label: Strata
+ui_kind: native
+repository_source: Strata
+install_kind: prebuilt
+runtime_kind: strata
+scanner_kind: strata_profile
+active_path_fields:
+- binary_path
+artifact_formats:
+- strata_bundle
+package_kinds:
+- prepared_bundle
+tasks:
+- text-generation
+input_modalities:
+- text
+output_modalities:
+- text
+experimental: true
+supports_embeddings: false
+launch_policy:
+  cpu_supported: false
+discovery:
+  mode: adapter
+runtime_profiles:
+  default:
+    default: true
+    description: Strata local profile bundle server
+    launch_family: profile_bundle_http_server
+    port_binding:
+      flag: --port
+model_compat:
+  prepared_bundle_formats:
+  - strata_bundle

@@ -41,9 +41,10 @@ class BuildConfig:
 
     build_type: str = _BC["build_type"]
 
-    # Backends (Studio: CPU + CUDA only)
+    # Backends
     enable_cuda: bool = _BC["enable_cuda"]
     enable_blas: bool = _BC["enable_blas"]
+    enable_vulkan: bool = _BC["enable_vulkan"]
     # IQK (ik_llama.cpp)
     enable_iqk_mul_mat: bool = _BC.get("enable_iqk_mul_mat", True)
     enable_iqk_flash_attention: bool = _BC.get("enable_iqk_flash_attention", True)

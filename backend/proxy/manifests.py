@@ -554,5 +554,15 @@ def _canonical(payload: Dict[str, Any]) -> str:
 def _write_artifact(directory: str, name: str, payload: Any) -> None:
     if not name or name != os.path.basename(name) or name in {".", ".."}:
         raise ManifestStoreError(f"invalid artifact name {name!r}")
-    text = json.dumps(payload, sort_keys=True, indent=2) + "\n"
+    if (
+        isinstance(payload, dict)
+        and set(payload) == {"__studio_artifact_format", "content"}
+        and payload.get("__studio_artifact_format") == "raw-text"
+        and isinstance(payload.get("content"), str)
+    ):
+        text = payload["content"]
+        if "\x00" in text:
+            raise ManifestStoreError("text artifact content contains NUL")
+    else:
+        text = json.dumps(payload, sort_keys=True, indent=2) + "\n"
     _atomic_write(os.path.join(directory, name), text)

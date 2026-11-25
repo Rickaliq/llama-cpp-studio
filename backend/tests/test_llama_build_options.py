@@ -87,7 +87,7 @@ def test_settings_to_build_config_backends():
         {"cuda": True, "vulkan": True, "flash_attention": True, "native": False}
     )
     assert cfg.enable_cuda is True
-    assert not hasattr(cfg, "enable_vulkan")
+    assert cfg.enable_vulkan is True
     assert cfg.enable_flash_attention is True
     assert cfg.enable_native is False
 

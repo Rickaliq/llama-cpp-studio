@@ -35,23 +35,89 @@ vi.mock('primevue/useconfirm', () => ({
   useConfirm: () => ({ require: vi.fn() }),
 }))
 
-const { storeQuantization, engineDescriptors, engineRuntime } = vi.hoisted(() => ({
-  engineDescriptors: [],
-  engineRuntime: {
-    runtimePlanState: { applicable: false, stale: false },
-    runtimePlan: { applicable: false, pending: false, changes: [], reason: null },
+const { storeQuantization, engineDescriptors, engineRuntime, modelConfigPayload } = vi.hoisted(
+  () => ({
+    engineDescriptors: [],
+    engineRuntime: {
+      runtimePlanState: { applicable: false, stale: false },
+      runtimePlan: { applicable: false, pending: false, changes: [], reason: null },
+    },
+    modelConfigPayload: {
+      engine: 'llama_cpp',
+      engines: {
+        llama_cpp: {
+          temperature: 0.7,
+          legacy_temp: 0.7,
+        },
+      },
+    },
+    storeQuantization: {
+      id: 'model-1',
+      display_name: 'Test Model',
+      base_model_name: 'Test Model',
+      huggingface_id: 'org/model',
+      quantization: 'Q4_K_M',
+      format: 'gguf',
+      compatible_engines: undefined,
+      artifact: {},
+    },
+  }),
+)
+
+// Captured from the four saved engine setup profiles. These are deliberately
+// kept as API-shaped fixtures so the draft path is exercised with the values
+// and catalog keys Studio receives, rather than hand-written UI defaults.
+const savedSetupProfiles = {
+  llama_cpp: {
+    ctx_size: 16384,
+    parallel: 1,
+    batch_size: 512,
+    ubatch_size: 128,
+    jinja: true,
   },
-  storeQuantization: {
-    id: 'model-1',
-    display_name: 'Test Model',
-    base_model_name: 'Test Model',
-    huggingface_id: 'org/model',
-    quantization: 'Q4_K_M',
-    format: 'gguf',
-    compatible_engines: undefined,
-    artifact: {},
+  ik_llama: {
+    ctx_size: 16384,
+    parallel: 1,
+    batch_size: 128,
+    ubatch_size: 32,
+    threads: 6,
+    jinja: true,
   },
-}))
+  moe4all: {
+    ctx_size: '16384',
+    parallel: 1,
+    ubatch_size: 32,
+    threads: 8,
+  },
+  koboldcpp: {
+    contextsize: 16384,
+    usevulkan: ['0'],
+  },
+}
+
+const setupProfileParamCatalog = Object.fromEntries(
+  Object.keys(savedSetupProfiles).flatMap((engine) =>
+    Object.keys(savedSetupProfiles[engine]).map((key) => [
+      key,
+      {
+        key,
+        scope: 'process',
+        transport: 'server_flag',
+        primary_flag: `--${key.replaceAll('_', '-')}`,
+        type: Array.isArray(savedSetupProfiles[engine][key])
+          ? 'string'
+          : typeof savedSetupProfiles[engine][key] === 'number'
+            ? Number.isInteger(savedSetupProfiles[engine][key])
+              ? 'int'
+              : 'float'
+            : typeof savedSetupProfiles[engine][key] === 'boolean'
+              ? 'bool'
+              : 'string',
+        value_kind: Array.isArray(savedSetupProfiles[engine][key]) ? 'repeatable' : 'scalar',
+      },
+    ]),
+  ),
+)
 
 vi.mock('@/stores/models', () => ({
   useModelStore: () => ({
@@ -91,10 +157,10 @@ const buttonStub = {
 }
 
 const textInputStub = {
-  props: ['modelValue', 'placeholder', 'disabled', 'id'],
+  props: ['modelValue', 'placeholder', 'disabled', 'id', 'inputId'],
   emits: ['update:modelValue'],
   template:
-    '<input :id="id" :value="modelValue ?? ``" :placeholder="placeholder" :disabled="disabled" @input="$emit(`update:modelValue`, $event.target.value)" />',
+    '<input :id="inputId || id" :value="modelValue ?? ``" :placeholder="placeholder" :disabled="disabled" @input="$emit(`update:modelValue`, $event.target.value)" />',
 }
 
 const textareaStub = {
@@ -155,12 +221,13 @@ function mountView() {
         Slider: true,
         LoadingState: { template: '<div>loading</div>' },
         EmptyState: { template: '<div><slot /></div>' },
-        PageHeader: { template: '<div><slot name="start" /><slot name="title" /><slot name="actions" /></div>' },
+        PageHeader: {
+          template: '<div><slot name="start" /><slot name="title" /><slot name="actions" /></div>',
+        },
         Dialog: {
           props: ['visible', 'header'],
           emits: ['update:visible', 'show'],
-          template:
-            '<div v-if="visible" class="dialog-stub"><slot /><slot name="footer" /></div>',
+          template: '<div v-if="visible" class="dialog-stub"><slot /><slot name="footer" /></div>',
         },
       },
     },
@@ -174,6 +241,11 @@ describe('ModelConfig', () => {
     storeQuantization.quantization = 'Q4_K_M'
     storeQuantization.compatible_engines = undefined
     storeQuantization.artifact = {}
+    storeQuantization.source = undefined
+    modelConfigPayload.engine = 'llama_cpp'
+    modelConfigPayload.engines = {
+      llama_cpp: { temperature: 0.7, legacy_temp: 0.7 },
+    }
     engineDescriptors.splice(0, engineDescriptors.length)
     engineRuntime.runtimePlanState.applicable = false
     engineRuntime.runtimePlanState.stale = false
@@ -191,15 +263,58 @@ describe('ModelConfig', () => {
 
     vi.mocked(axios.get).mockImplementation((url) => {
       if (url === '/api/models/model-1/config') {
+        return Promise.resolve({ data: modelConfigPayload })
+      }
+      if (url === '/api/engine-setup-defaults/llama_cpp') {
         return Promise.resolve({
           data: {
+            values: { temperature: 0.2 },
+            revision: 'defaults-r1',
             engine: 'llama_cpp',
-            engines: {
-              llama_cpp: {
-                temperature: 0.7,
-                legacy_temp: 0.7,
+            active_version: 'local-build',
+            catalog: {
+              temperature: {
+                key: 'temperature',
+                scope: 'process',
+                transport: 'server_flag',
+                primary_flag: '--temperature',
+                type: 'float',
               },
             },
+          },
+        })
+      }
+      if (url === '/api/engine-setup-defaults/ik_llama') {
+        return Promise.resolve({
+          data: {
+            values: { ctx_size: 8192 },
+            revision: 'ik-defaults-r4',
+            engine: 'ik_llama',
+            active_version: 'ik-local-build',
+            catalog: {
+              ctx_size: {
+                key: 'ctx_size',
+                scope: 'process',
+                transport: 'server_flag',
+                primary_flag: '--ctx-size',
+                type: 'int',
+              },
+            },
+          },
+        })
+      }
+      const setupProfileMatch = String(url).match(/^\/api\/engine-setup-defaults\/(moe4all|koboldcpp)$/)
+      if (setupProfileMatch) {
+        const engine = setupProfileMatch[1]
+        return Promise.resolve({
+          data: {
+            values: savedSetupProfiles[engine],
+            revision: `${engine}-defaults-r1`,
+            engine,
+            active_version: `${engine}-local-build`,
+            catalog: Object.fromEntries(
+              Object.keys(savedSetupProfiles[engine]).map((key) => [key, setupProfileParamCatalog[key]]),
+            ),
           },
         })
       }
@@ -223,6 +338,15 @@ describe('ModelConfig', () => {
                     supported: true,
                   },
                   {
+                    key: 'jinja',
+                    label: 'Jinja',
+                    type: 'bool',
+                    value_kind: 'flag',
+                    primary_flag: '--jinja',
+                    flags: ['--jinja'],
+                    supported: true,
+                  },
+                  {
                     key: 'ctx_size',
                     label: 'Context Size',
                     type: 'int',
@@ -233,6 +357,14 @@ describe('ModelConfig', () => {
                     flags: ['--ctx-size'],
                     supported: true,
                   },
+                  ...Object.values(setupProfileParamCatalog)
+                    .filter((param) => !['temperature', 'jinja', 'ctx_size'].includes(param.key))
+                    .map((param) => ({
+                    ...param,
+                    label: param.key,
+                    flags: [param.primary_flag],
+                    supported: true,
+                    })),
                   {
                     key: 'host',
                     label: 'Host',
@@ -314,12 +446,204 @@ describe('ModelConfig', () => {
     vi.useRealTimers()
   })
 
+  it('loads setup defaults without exposing a Studio editor', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    expect(wrapper.get('#basic-temperature').element.value).toBe('0.7')
+    expect(wrapper.text()).not.toContain('Edit engine setup defaults')
+    expect(wrapper.text()).not.toContain('Save setup defaults')
+    expect(axios.put).not.toHaveBeenCalled()
+  })
+
+  it('seeds an empty engine section as a model draft and saves it only on explicit model save', async () => {
+    modelConfigPayload.engines = {}
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Unsaved changes')
+    expect(axios.put).not.toHaveBeenCalled()
+
+    await wrapper.get('button[data-label="Save changes"]').trigger('click')
+    await flushPromises()
+    const modelSave = vi
+      .mocked(axios.put)
+      .mock.calls.find(([url]) => url === '/api/models/model-1/config')
+    expect(modelSave?.[1].engines.llama_cpp.temperature).toBe(0.2)
+  })
+
+  it.each(Object.entries(savedSetupProfiles))(
+    'seeds the empty %s engine section from its saved profile without mutating the model',
+    async (engine, values) => {
+      const normalGet = vi.mocked(axios.get).getMockImplementation()
+      vi.mocked(axios.get).mockImplementation((url, options) => {
+        if (url === `/api/engine-setup-defaults/${engine}`) {
+          return Promise.resolve({
+            data: {
+              values,
+              engine,
+              active_version: `${engine}-captured-build`,
+              catalog: Object.fromEntries(
+                Object.keys(values).map((key) => [key, setupProfileParamCatalog[key]]),
+              ),
+            },
+          })
+        }
+        return normalGet(url, options)
+      })
+      modelConfigPayload.engine = engine
+      modelConfigPayload.engines = {}
+      engineDescriptors.push({
+        id: engine,
+        label: engine,
+        runnable: true,
+        installed_versions: 1,
+        enabled: true,
+        artifact_formats: ['gguf'],
+      })
+
+      const wrapper = mountView()
+      await flushPromises()
+      await vi.runAllTimersAsync()
+      await flushPromises()
+
+      expect(wrapper.vm.config.engines[engine]).toEqual(values)
+      expect(wrapper.text()).toContain('Unsaved changes')
+      expect(axios.put).not.toHaveBeenCalled()
+      expect(modelConfigPayload.engines).toEqual({})
+    },
+  )
+
+  it.each(Object.entries(savedSetupProfiles))(
+    'keeps an existing nonempty %s engine section unchanged when profile defaults load',
+    async (engine, values) => {
+      const normalGet = vi.mocked(axios.get).getMockImplementation()
+      vi.mocked(axios.get).mockImplementation((url, options) => {
+        if (url === `/api/engine-setup-defaults/${engine}`) {
+          return Promise.resolve({ data: { values, engine, catalog: setupProfileParamCatalog } })
+        }
+        return normalGet(url, options)
+      })
+      const existing = { existing_setting: 'keep-me' }
+      modelConfigPayload.engine = engine
+      modelConfigPayload.engines = { [engine]: { ...existing } }
+      engineDescriptors.push({
+        id: engine,
+        label: engine,
+        runnable: true,
+        installed_versions: 1,
+        enabled: true,
+        artifact_formats: ['gguf'],
+      })
+
+      const wrapper = mountView()
+      await flushPromises()
+      await vi.runAllTimersAsync()
+      await flushPromises()
+
+      expect(wrapper.vm.config.engines[engine]).toEqual(existing)
+      expect(axios.put).not.toHaveBeenCalled()
+      expect(modelConfigPayload.engines[engine]).toEqual(existing)
+    },
+  )
+
+  it('loads and seeds setup defaults independently when switching to another engine', async () => {
+    engineDescriptors.push({
+      id: 'ik_llama',
+      label: 'ik_llama.cpp',
+      runnable: true,
+      installed_versions: 1,
+      enabled: true,
+      artifact_formats: ['gguf'],
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    await wrapper
+      .findAll('button.engine-option')
+      .find((button) => button.text().includes('ik_llama'))
+      .trigger('click')
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    expect(axios.get).toHaveBeenCalledWith('/api/engine-setup-defaults/ik_llama', { timeout: 1500 })
+    expect(wrapper.get('#basic-ctx_size').element.value).toBe('8192')
+    expect(wrapper.text()).toContain('Unsaved changes')
+  })
+
+  it('continues with the ordinary model form when setup defaults cannot be read', async () => {
+    const normalGet = vi.mocked(axios.get).getMockImplementation()
+    vi.mocked(axios.get).mockImplementation((url, options) => {
+      if (String(url).startsWith('/api/engine-setup-defaults/')) {
+        return Promise.reject(new Error('unavailable'))
+      }
+      return normalGet(url, options)
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    expect(wrapper.find('#basic-temperature').exists()).toBe(true)
+    expect(wrapper.get('#basic-temperature').element.value).toBe('0.7')
+    expect(axios.put).not.toHaveBeenCalledWith('/api/models/model-1/config', expect.anything())
+  })
+
+  it('lets a local model save or clear a user-provided Hugging Face source', async () => {
+    storeQuantization.source = { provider: 'local' }
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+
+    const input = wrapper.get('#source-huggingface-repo')
+    await input.setValue('https://huggingface.co/example/model')
+    await wrapper.get('.model-source-editor').trigger('submit')
+    await flushPromises()
+
+    expect(axios.put).toHaveBeenCalledWith('/api/models/model-1/source', {
+      huggingface_repo: 'https://huggingface.co/example/model',
+    })
+    expect(wrapper.text()).toContain('Studio does not verify that these files came from')
+
+    await input.setValue('')
+    await wrapper.get('.model-source-editor').trigger('submit')
+    await flushPromises()
+    expect(axios.put).toHaveBeenLastCalledWith('/api/models/model-1/source', {
+      huggingface_repo: null,
+    })
+  })
+
+  it('saves a newly edited Basics toggle and keeps temperature in the selected engine section', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await vi.runAllTimersAsync()
+    await flushPromises()
+    const basic = wrapper.findAll('.param-field').find((field) => field.text().includes('Jinja'))
+    expect(basic).toBeTruthy()
+    await basic.get('input[type="checkbox"]').setValue(true)
+    await wrapper.get('button[data-label="Save changes"]').trigger('click')
+    await flushPromises()
+    const payload = vi.mocked(axios.put).mock.calls.at(-1)[1]
+    expect(payload.engines.llama_cpp.jinja).toBe(true)
+    expect(payload.engines.llama_cpp.temperature).toBe(0.7)
+  })
+
   it('removes an explicit override from the saved engine section when restoring its default', async () => {
     const wrapper = mountView()
     await flushPromises()
     await vi.runAllTimersAsync()
     await flushPromises()
-    const basic = wrapper.findAll('.param-field').find((field) => field.text().includes('Context Size'))
+    const basic = wrapper
+      .findAll('.param-field')
+      .find((field) => field.text().includes('Context Size'))
     await basic.get('input').setValue('8192')
     await basic.get('.param-reset').trigger('click')
     await wrapper.get('button[data-label="Save changes"]').trigger('click')
@@ -371,9 +695,11 @@ describe('ModelConfig', () => {
   })
 
   it('keeps the form and waits for a deliberate retry when the save queue is full', async () => {
-    vi.mocked(axios.put).mockRejectedValue(Object.assign(new Error('busy'), {
-      response: { status: 503, data: { code: 'STORE_QUEUE_FULL', committed: false } },
-    }))
+    vi.mocked(axios.put).mockRejectedValue(
+      Object.assign(new Error('busy'), {
+        response: { status: 503, data: { code: 'STORE_QUEUE_FULL', committed: false } },
+      }),
+    )
     const wrapper = mountView()
     await flushPromises()
     await vi.runAllTimersAsync()
@@ -396,9 +722,11 @@ describe('ModelConfig', () => {
   })
 
   it('refreshes a replaced configuration and does not save it again automatically', async () => {
-    vi.mocked(axios.put).mockRejectedValue(Object.assign(new Error('ack'), {
-      response: { status: 500, data: { code: 'STORE_WRITE_FAILED', committed: true } },
-    }))
+    vi.mocked(axios.put).mockRejectedValue(
+      Object.assign(new Error('ack'), {
+        response: { status: 500, data: { code: 'STORE_WRITE_FAILED', committed: true } },
+      }),
+    )
     const wrapper = mountView()
     await flushPromises()
     await vi.runAllTimersAsync()
@@ -420,9 +748,11 @@ describe('ModelConfig', () => {
     await flushPromises()
 
     vi.mocked(axios.get).mockRejectedValue(new Error('offline'))
-    vi.mocked(axios.put).mockRejectedValue(Object.assign(new Error('ack'), {
-      response: { status: 500, data: { code: 'STORE_WRITE_FAILED', committed: true } },
-    }))
+    vi.mocked(axios.put).mockRejectedValue(
+      Object.assign(new Error('ack'), {
+        response: { status: 500, data: { code: 'STORE_WRITE_FAILED', committed: true } },
+      }),
+    )
     await wrapper.get('button[data-label="Save changes"]').trigger('click')
     await flushPromises()
 
@@ -500,8 +830,12 @@ describe('ModelConfig', () => {
     await vi.runAllTimersAsync()
     await flushPromises()
 
-    const envKeys = wrapper.findAll('input[placeholder="VAR_NAME"]').map((input) => input.element.value)
-    const envValues = wrapper.findAll('input[placeholder="value"]').map((input) => input.element.value)
+    const envKeys = wrapper
+      .findAll('input[placeholder="VAR_NAME"]')
+      .map((input) => input.element.value)
+    const envValues = wrapper
+      .findAll('input[placeholder="value"]')
+      .map((input) => input.element.value)
     expect(envKeys).toEqual(expect.arrayContaining(['FOO', 'EMPTY', 'REMOVED_VAR']))
     expect(envValues).toContain('bar')
     expect(wrapper.text()).not.toContain('2 GPUs selected')
@@ -591,7 +925,9 @@ describe('ModelConfig', () => {
     await vi.runAllTimersAsync()
     await flushPromises()
 
-    const gpuMode = wrapper.findAll('#gpu-mode button').find((button) => button.text() === 'All GPUs')
+    const gpuMode = wrapper
+      .findAll('#gpu-mode button')
+      .find((button) => button.text() === 'All GPUs')
     await gpuMode.trigger('click')
     await flushPromises()
 
@@ -616,7 +952,7 @@ describe('ModelConfig', () => {
 
     expect(wrapper.text()).not.toContain('Unsaved changes')
 
-    const temperatureInput = wrapper.get('input[placeholder="0.8"]')
+    const temperatureInput = wrapper.get('#basic-temperature')
     await temperatureInput.setValue('0.9')
     await flushPromises()
 
@@ -644,7 +980,7 @@ describe('ModelConfig', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('Unsaved changes')
-    expect(wrapper.get('input[placeholder="0.8"]').element.value).toBe('0.55')
+    expect(wrapper.get('#basic-temperature').element.value).toBe('0.55')
     expect(wrapper.vm).toBeTruthy()
     expect(wrapper.text()).toContain('ctx_size')
     expect(wrapper.text()).not.toContain('0.0.0.0')
@@ -658,9 +994,9 @@ describe('ModelConfig', () => {
 
     await wrapper.get('button[data-label="Import command"]').trigger('click')
     await flushPromises()
-    await wrapper.get('#parse-command-text').setValue(
-      'FLASHINFER_DISABLE_VERSION_CHECK=1 PORT=9 LLAMA_STUDIO_MODEL_PATH=/x sglang serve',
-    )
+    await wrapper
+      .get('#parse-command-text')
+      .setValue('FLASHINFER_DISABLE_VERSION_CHECK=1 PORT=9 LLAMA_STUDIO_MODEL_PATH=/x sglang serve')
     await flushPromises()
 
     expect(wrapper.find('#import-env-FLASHINFER_DISABLE_VERSION_CHECK').exists()).toBe(true)
@@ -669,11 +1005,15 @@ describe('ModelConfig', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('Unsaved changes')
-    const envKeys = wrapper.findAll('input[placeholder="VAR_NAME"]').map((input) => input.element.value)
+    const envKeys = wrapper
+      .findAll('input[placeholder="VAR_NAME"]')
+      .map((input) => input.element.value)
     expect(envKeys).toContain('FLASHINFER_DISABLE_VERSION_CHECK')
     expect(envKeys).not.toContain('PORT')
     expect(envKeys).not.toContain('LLAMA_STUDIO_MODEL_PATH')
-    const envValues = wrapper.findAll('input[placeholder="value"]').map((input) => input.element.value)
+    const envValues = wrapper
+      .findAll('input[placeholder="value"]')
+      .map((input) => input.element.value)
     expect(envValues).toContain('1')
   })
 
@@ -705,8 +1045,20 @@ describe('ModelConfig', () => {
 
   it('hides engines that are not installed', async () => {
     engineDescriptors.push(
-      { id: 'llama_cpp', label: 'llama.cpp', enabled: true, installed_versions: 0, artifact_formats: ['gguf'] },
-      { id: 'ik_llama', label: 'ik_llama.cpp', enabled: true, installed_versions: 1, artifact_formats: ['gguf'] },
+      {
+        id: 'llama_cpp',
+        label: 'llama.cpp',
+        enabled: true,
+        installed_versions: 0,
+        artifact_formats: ['gguf'],
+      },
+      {
+        id: 'ik_llama',
+        label: 'ik_llama.cpp',
+        enabled: true,
+        installed_versions: 1,
+        artifact_formats: ['gguf'],
+      },
     )
     const wrapper = mountView()
     await flushPromises()
@@ -732,7 +1084,9 @@ describe('ModelConfig', () => {
     await vi.runAllTimersAsync()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('The model is stopped, so they are used the next time it starts.')
+    expect(wrapper.text()).toContain(
+      'The model is stopped, so they are used the next time it starts.',
+    )
     expect(wrapper.text()).not.toContain('Pending changes for this model')
   })
 

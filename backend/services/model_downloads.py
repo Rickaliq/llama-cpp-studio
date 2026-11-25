@@ -13,6 +13,7 @@ from backend.models.hub import (
     download_model_with_progress,
     extract_quantization,
     extract_quantization_key,
+    gguf_artifact_key,
     get_model_details,
     get_remote_file_info,
     get_safetensors_metadata_summary,
@@ -57,6 +58,23 @@ def _format_download_bytes(value: int) -> str:
         unit_index += 1
     precision = 0 if amount >= 10 or unit_index == 0 else 1
     return f"{amount:.{precision}f} {units[unit_index]}"
+
+
+def _artifact_identity_suffix(artifact_key: Optional[str]) -> str:
+    """Short stable suffix for variant-specific model and proxy identities."""
+    if not artifact_key:
+        return ""
+    import hashlib
+
+    return hashlib.sha256(artifact_key.encode("utf-8")).hexdigest()[:12]
+
+
+def _gguf_model_id(
+    huggingface_id: str, quantization: str, artifact_key: Optional[str] = None
+) -> str:
+    base = f"{huggingface_id.replace('/', '--')}--{quantization}"
+    suffix = _artifact_identity_suffix(artifact_key)
+    return f"{base}--{suffix}" if suffix else base
 
 
 def _resolve_bundle_file_sizes(
@@ -232,13 +250,15 @@ async def register_safetensors_bundle_download(
 
 
 async def register_gguf_bundle_download(
-    *, task_id: str, huggingface_id: str, quantization: str
+    *, task_id: str, huggingface_id: str, quantization: str,
+    artifact_key: Optional[str] = None,
 ) -> None:
     async with download_lock:
         if any(
             d["huggingface_id"] == huggingface_id
             and d.get("model_format") == "gguf-bundle"
             and d.get("quantization") == quantization
+            and d.get("artifact_key") == artifact_key
             for d in active_downloads.values()
         ):
             raise ActiveDownloadConflict("GGUF bundle is already being downloaded")
@@ -247,6 +267,7 @@ async def register_gguf_bundle_download(
             "filename": quantization,
             "quantization": quantization,
             "model_format": "gguf-bundle",
+            "artifact_key": artifact_key,
         }
         register_task_cancel(task_id)
 
@@ -623,6 +644,8 @@ async def save_safetensors_download(
             ),
             "config_review_source": DOWNLOAD_CONFIG_REVIEW_SOURCE,
         }
+        from backend.services.model_autoconfig import maybe_initialize_new_gguf_model
+        model_record = maybe_initialize_new_gguf_model(store, model_record)
         store.add_model(model_record)
     else:
         updates = {}
@@ -676,6 +699,8 @@ async def record_gguf_download_post_fetch(
     pipeline_tag: Optional[str] = None,
     aggregate_size: bool = True,
     remote_metadata: Optional[Dict[str, Any]] = None,
+    artifact_key: Optional[str] = None,
+    artifact_label: Optional[str] = None,
 ) -> Tuple[dict, Optional[Dict[str, Any]]]:
     """
     Create/update a GGUF model row after a file has been downloaded.
@@ -697,7 +722,7 @@ async def record_gguf_download_post_fetch(
         detected_pipeline = "text-embedding"
     metadata_result: Optional[Dict[str, Any]] = None
 
-    model_id = f"{huggingface_id.replace('/', '--')}--{quantization}"
+    model_id = _gguf_model_id(huggingface_id, quantization, artifact_key)
     model_record = store.get_model(model_id)
 
     if not model_record:
@@ -706,12 +731,15 @@ async def record_gguf_download_post_fetch(
         model_record = {
             "id": model_id,
             "huggingface_id": huggingface_id,
-            "display_name": f"{base_model_name}-{quantization}",
+            "display_name": f"{base_model_name}-{quantization}"
+            + (f" ({artifact_label or artifact_key})" if artifact_key else ""),
             "base_model_name": base_model_name,
             "file_size": file_size if aggregate_size else 0,
             "quantization": quantization,
+            **({"artifact_key": artifact_key} if artifact_key else {}),
             "model_type": mm.extract_model_type(filename),
-            "proxy_name": generate_proxy_name(huggingface_id, quantization),
+            "proxy_name": generate_proxy_name(huggingface_id, quantization)
+            + (f".{_artifact_identity_suffix(artifact_key)}" if artifact_key else ""),
             "format": "gguf",
             "downloaded_at": datetime.now(_tz.utc).isoformat(),
             "pipeline_tag": detected_pipeline,
@@ -722,6 +750,8 @@ async def record_gguf_download_post_fetch(
             ),
             "config_review_source": DOWNLOAD_CONFIG_REVIEW_SOURCE,
         }
+        from backend.services.model_autoconfig import maybe_initialize_new_gguf_model
+        model_record = maybe_initialize_new_gguf_model(store, model_record)
         store.add_model(model_record)
     else:
         updates = {}
@@ -1047,6 +1077,8 @@ async def download_gguf_bundle_task(
     mtp: Optional[Dict[str, Any]] = None,
     dflash: Optional[Dict[str, Any]] = None,
     dspark: Optional[Dict[str, Any]] = None,
+    artifact_key: Optional[str] = None,
+    artifact_label: Optional[str] = None,
 ):
     store = get_store()
     try:
@@ -1103,6 +1135,8 @@ async def download_gguf_bundle_task(
                     file_size,
                     pipeline_tag=pipeline_tag,
                     aggregate_size=False,
+                    artifact_key=artifact_key,
+                    artifact_label=artifact_label,
                 )
             except Exception as exc:
                 logger.error("Failed to record GGUF download for %s: %s", filename, exc)
@@ -1110,7 +1144,7 @@ async def download_gguf_bundle_task(
             bytes_completed += file_size
             bundle_model_bytes += file_size
 
-        model_id = f"{huggingface_id.replace('/', '--')}--{quantization}"
+        model_id = _gguf_model_id(huggingface_id, quantization, artifact_key)
         model_record = store.get_model(model_id)
         companion_index = len(files)
 

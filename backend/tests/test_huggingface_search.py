@@ -167,6 +167,61 @@ def test_extract_quantization_accepts_lowercase_hub_filenames():
     assert result["quantizations"]["Q4_K_M"]["total_size"] == 3993201344 + 689872288
 
 
+def test_same_quantization_model_variants_are_not_combined_as_shards():
+    from backend.models.hub import _process_single_model
+
+    model = SimpleNamespace(
+        id="DavidAU/LFM2.5-8B-A1B-Qwen3.8-Turbo-Brilliance-Power-X12-NEO-MAX-GGUF",
+        modelId="DavidAU/LFM2.5-8B-A1B-Qwen3.8-Turbo-Brilliance-Power-X12-NEO-MAX-GGUF",
+        author="DavidAU",
+        downloads=10,
+        likes=1,
+        tags=[],
+        siblings=[
+            SimpleNamespace(
+                rfilename="LFM2.5-8B-A1B-Q3.8-TBrilliance-NEO-IQ4_XS.gguf",
+                size=100,
+            ),
+            SimpleNamespace(
+                rfilename="LFM2.5-8B-A1B-Q3.8-TBrilliance-NEO-MAX-IQ4_XS.gguf",
+                size=120,
+            ),
+        ],
+    )
+
+    result = asyncio.run(_process_single_model(model, "gguf"))
+    variants = result["quantizations"]
+    assert len(variants) == 2
+    files = [entry["files"] for entry in variants.values()]
+    assert sorted(len(group) for group in files) == [1, 1]
+    assert {group[0]["filename"] for group in files} == {
+        "LFM2.5-8B-A1B-Q3.8-TBrilliance-NEO-IQ4_XS.gguf",
+        "LFM2.5-8B-A1B-Q3.8-TBrilliance-NEO-MAX-IQ4_XS.gguf",
+    }
+
+
+def test_matching_artifact_shard_files_stay_together():
+    from backend.models.hub import _process_single_model
+
+    model = SimpleNamespace(
+        id="org/model-GGUF",
+        modelId="org/model-GGUF",
+        author="org",
+        downloads=1,
+        likes=0,
+        tags=[],
+        siblings=[
+            SimpleNamespace(rfilename="model-Q4_K_M-00001-of-00002.gguf", size=10),
+            SimpleNamespace(rfilename="model-Q4_K_M-00002-of-00002.gguf", size=20),
+        ],
+    )
+    result = asyncio.run(_process_single_model(model, "gguf"))
+    assert len(result["quantizations"]) == 1
+    quant = next(iter(result["quantizations"].values()))
+    assert len(quant["files"]) == 2
+    assert quant["total_size"] == 30
+
+
 def test_repo_id_from_query_accepts_only_org_name():
     from backend.models.hub import repo_id_from_query
 

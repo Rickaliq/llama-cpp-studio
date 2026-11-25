@@ -432,9 +432,11 @@ def list_repo_companion_files(huggingface_id: str) -> Dict[str, List[Dict[str, A
 
 
 def _list_remote_gguf_weight_files(
-    huggingface_id: str, quantization: Optional[str]
+    huggingface_id: str,
+    quantization: Optional[str],
+    artifact_key: Optional[str] = None,
 ) -> List[str]:
-    """Return remote GGUF weight filenames matching a library quantization."""
+    """Return remote weights for a quantization and, when known, its artifact."""
     if not huggingface_id or not quantization:
         return []
     try:
@@ -450,8 +452,22 @@ def _list_remote_gguf_weight_files(
             continue
         if is_auxiliary_gguf_filename(filename):
             continue
-        if extract_quantization_key(filename).lower() == quant_lower:
+        if (
+            extract_quantization_key(filename).lower() == quant_lower
+            and (
+                not artifact_key
+                or gguf_artifact_key(filename, quantization) == artifact_key
+            )
+        ):
             matched.append(filename)
+    if not artifact_key:
+        # A legacy library row with no artifact identity cannot safely refresh
+        # from a repository that has multiple models at the same quantization.
+        identities = {
+            gguf_artifact_key(filename, quantization) for filename in matched
+        }
+        if len(identities) > 1:
+            return []
     return matched
 
 
@@ -489,7 +505,16 @@ def collect_model_refresh_plan(model: Dict[str, Any]) -> Dict[str, Any]:
                 "etag": entry.get("etag"),
                 "sha256": entry.get("sha256"),
             }
-        for fn in _list_remote_gguf_weight_files(huggingface_id, quantization):
+        artifact_key = model.get("artifact_key")
+        if not artifact_key:
+            local_artifact_keys = {
+                gguf_artifact_key(fn, quantization) for fn in filenames
+            }
+            if len(local_artifact_keys) == 1:
+                artifact_key = next(iter(local_artifact_keys))
+        for fn in _list_remote_gguf_weight_files(
+            huggingface_id, quantization, artifact_key=artifact_key
+        ):
             if fn not in local_entries:
                 filenames.append(fn)
                 local_entries.setdefault(fn, {})
@@ -1481,6 +1506,7 @@ async def _process_single_model(model, model_format: str) -> Optional[Dict]:
                 if not gguf_siblings:
                     return None
 
+                grouped_weights: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
                 for sibling in gguf_siblings:
                     filename = sibling.rfilename
                     size_bytes = getattr(sibling, "size", 0) or 0
@@ -1553,32 +1579,43 @@ async def _process_single_model(model, model_format: str) -> Optional[Dict]:
                         else quantization
                     )
 
-                    entry = quantizations.setdefault(
-                        quant_key,
-                        {
-                            # Store both the raw quantization and any variant prefix for clients
-                            # that want to render them separately.
-                            "quantization": quantization,
-                            "files": [],
-                            "total_size": 0,
-                            "size_mb": 0.0,
-                            "variant_prefix": variant_prefix or "",
-                        },
+                    artifact_key = gguf_artifact_key(filename, quant_key)
+                    grouped_weights.setdefault(quant_key, {}).setdefault(
+                        artifact_key, []
+                    ).append({"filename": filename, "size": size_bytes})
+
+                # A repository may publish distinct model variants at the same
+                # quantization (for example, MAX and non-MAX). Keep shard files
+                # together only when their normalized artifact stem also matches.
+                for quant_key, artifacts in grouped_weights.items():
+                    duplicate_artifacts = len(artifacts) > 1
+                    labels = _artifact_labels(list(artifacts)) if duplicate_artifacts else {}
+                    variant_match = re.fullmatch(
+                        r"(i\d+|UD)-(.+)", quant_key, flags=re.IGNORECASE
                     )
-                    if variant_prefix and not entry.get("variant_prefix"):
-                        entry["variant_prefix"] = variant_prefix
-                    entry["files"].append(
-                        {
-                            "filename": filename,
-                            "size": size_bytes,
+                    quantization_value = (
+                        variant_match.group(2) if variant_match else quant_key
+                    )
+                    variant_value = variant_match.group(1) if variant_match else ""
+                    for artifact_key, files in artifacts.items():
+                        key = (
+                            f"{quant_key}::{artifact_key}"
+                            if duplicate_artifacts
+                            else quant_key
+                        )
+                        total_size = sum(file["size"] for file in files)
+                        quantizations[key] = {
+                            "quantization": quantization_value,
+                            "quantization_key": quant_key,
+                            "files": files,
+                            "total_size": total_size,
+                            "size_mb": round(total_size / (1024 * 1024), 2)
+                            if total_size
+                            else 0.0,
+                            "variant_prefix": variant_value,
+                            "artifact_key": artifact_key,
+                            "artifact_label": labels.get(artifact_key, ""),
                         }
-                    )
-                    entry["total_size"] += size_bytes
-                    entry["size_mb"] = (
-                        round(entry["total_size"] / (1024 * 1024), 2)
-                        if entry["total_size"]
-                        else 0.0
-                    )
 
                 # Engram tables use ``*.gguf_file`` so model scanners do not
                 # treat them as weights; keep them as a separate companion group.
@@ -1799,6 +1836,35 @@ def extract_quantization_key(filename: str) -> str:
     if prefix.lower() == "ud":
         prefix = "UD"
     return f"{prefix}-{base}"
+
+
+def gguf_artifact_key(filename: str, quantization: Optional[str] = None) -> str:
+    """Return the exact repository-relative GGUF stem without its shard suffix.
+
+    Files belonging to one sharded artifact normalize to the same key, while
+    separately named models at the same quantization retain distinct keys.
+    Preserve spelling, punctuation, case, directories and quant suffix because
+    HF paths are case-sensitive and normalization could merge distinct assets.
+    """
+    path = str(filename or "").replace("\\", "/").strip("/")
+    path = re.sub(r"-\d{5}-of-\d{5}(?=\.gguf$)", "", path, flags=re.IGNORECASE)
+    path = re.sub(r"\.gguf\.part\d+of\d+$", ".gguf", path, flags=re.IGNORECASE)
+    if path.lower().endswith(".gguf"):
+        path = path[:-5]
+
+    return path
+
+
+def _artifact_labels(artifact_keys: List[str]) -> Dict[str, str]:
+    """Create short distinguishing labels for same-quantization artifacts."""
+    if not artifact_keys:
+        return {}
+    common = os.path.commonprefix(artifact_keys).rstrip("-_.")
+    labels = {}
+    for key in artifact_keys:
+        label = key[len(common) :].strip("-_.")
+        labels[key] = label or "base"
+    return labels
 
 
 def _extract_safetensors_metadata(siblings) -> Dict:

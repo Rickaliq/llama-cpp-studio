@@ -1,0 +1,42 @@
+# Local GGUF runtime using the MoE4All `infr serve` OpenAI-compatible server.
+# The runtime binary is externally managed; Studio only owns model-process
+# launch and stop. No build/install recipe is declared here.
+schema_version: 2
+id: moe4all
+label: MoE4All
+ui_kind: native
+repository_source: MoE4All
+install_kind: prebuilt
+runtime_kind: moe4all
+scanner_kind: infr_help
+active_path_fields:
+- binary_path
+artifact_formats:
+- gguf
+package_kinds:
+- single_file
+tasks:
+- text-generation
+input_modalities:
+- text
+output_modalities:
+- text
+experimental: true
+supports_embeddings: false
+launch_policy:
+  cpu_supported: true
+  capcompat: true
+  runtime_context_key: ctx
+discovery:
+  parser: infr_help
+  probe_argv_prefix:
+  - serve
+  - --help
+runtime_profiles:
+  default:
+    default: true
+    description: MoE4All local GGUF server
+    launch_family: infr_gguf_server
+    port_binding:
+      flag: --addr
+    upstream_model_name: model_stem

@@ -127,6 +127,24 @@ def test_default_shadow_registry_untouched_by_reference_directory():
         if definition.id in cut_over:
             assert definition.schema_version == 2
             assert set(dict(definition.recipes)) == cut_over[definition.id]
+        elif definition.id == "moe4all":
+            # This local native runtime is launch/discovery-backed but does not
+            # claim an installer recipe; its binary is externally registered.
+            assert definition.schema_version == 2
+            assert definition.runtime_profiles
+            assert definition.recipes == ()
+        elif definition.id == "strata":
+            # Strata is an externally managed profile-bundle runtime; it
+            # has no installer recipe and no generic help-flag scan.
+            assert definition.schema_version == 2
+            assert definition.runtime_profiles
+            assert definition.recipes == ()
+        elif definition.id == "koboldcpp":
+            # KoboldCpp is a distinct externally managed GGUF runtime; Studio
+            # owns only local launch and parameter discovery, not installation.
+            assert definition.schema_version == 2
+            assert definition.runtime_profiles
+            assert definition.recipes == ()
         else:
             assert definition.schema_version == 1
             assert definition.runtime_profiles == ()
@@ -480,9 +498,16 @@ def test_family_profile_rejects_mechanism_composed_keys(key, value):
 def test_family_vocabulary_matches_the_implemented_mechanism():
     """The schema vocabulary and the interpreter's mechanism cannot drift."""
     from backend.engines.definitions.schema import LAUNCH_FAMILIES
-    from backend.proxy import gguf_launch
+    from backend.proxy import gguf_launch, infr_launch, koboldcpp_launch, profile_bundle_launch
 
-    assert LAUNCH_FAMILIES == frozenset({gguf_launch.LAUNCH_FAMILY})
+    assert LAUNCH_FAMILIES == frozenset(
+        {
+            gguf_launch.LAUNCH_FAMILY,
+            infr_launch.LAUNCH_FAMILY,
+            koboldcpp_launch.LAUNCH_FAMILY,
+            profile_bundle_launch.LAUNCH_FAMILY,
+        }
+    )
 
 
 def test_shadow_argv_evaluator_refuses_family_profiles():

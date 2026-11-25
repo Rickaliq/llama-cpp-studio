@@ -104,6 +104,44 @@ describe('ModelRow', () => {
     expect(wrapper.get('.quant-row').classes()).not.toContain('is-active')
   })
 
+  it('lists detected companion files and registered custom engines', () => {
+    const wrapper = mountRow({
+      quant: {
+        id: 'local-qwen',
+        name: 'Q4_K_M',
+        quantization: 'Q4_K_M',
+        is_active: false,
+        status: 'stopped',
+        mmproj_filename: 'model-mmproj.gguf',
+        mtp_filename: 'model-mtp.gguf',
+        is_embedding_model: false,
+        compatible_engines: ['llama_cpp', 'moe4all', 'koboldcpp'],
+      },
+    })
+
+    expect(wrapper.text()).toContain('Vision')
+    expect(wrapper.text()).toContain('MTP draft')
+    expect(wrapper.text()).toContain('MoE4All')
+    expect(wrapper.text()).toContain('KoboldCpp')
+    expect(wrapper.text()).not.toContain('Embeddings')
+  })
+
+  it('marks embedding models from stored embedding metadata', () => {
+    const wrapper = mountRow({
+      quant: {
+        id: 'local-embedding',
+        name: 'Q4_K_M',
+        quantization: 'Q4_K_M',
+        is_active: false,
+        status: 'stopped',
+        is_embedding_model: true,
+        compatible_engines: [],
+      },
+    })
+
+    expect(wrapper.text()).toContain('Embeddings')
+  })
+
   it('emits audio for audio.cpp models', async () => {
     const wrapper = mountRow({
       quant: {

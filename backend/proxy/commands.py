@@ -822,6 +822,10 @@ def _resolve_llama_model_source(
     *,
     fallback_model_path: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    source = _model_attr(model, "source") or {}
+    if source.get("provider") == "local" and _model_attr(model, "local_artifacts"):
+        path = _model_attr(model, "local_artifacts").get("weight")
+        return (path if path and os.path.isfile(path) else None), None, None
     hf_id = _model_attr(model, "huggingface_id")
     quantization = _model_attr(model, "quantization")
     hf_repo_arg = None
@@ -852,6 +856,12 @@ def _resolve_companion_path(
 ) -> Optional[str]:
     if hf_repo_arg:
         return None
+    source = _model_attr(model, "source") or {}
+    if source.get("provider") == "local" and _model_attr(model, "local_artifacts"):
+        path = _model_attr(model, "local_artifacts").get(field.removesuffix("_filename"))
+        if path and not os.path.isfile(path):
+            raise ValueError(f"Local companion file is missing: {path}")
+        return path
     filename = _model_attr(model, field)
     if not filename or not hf_id:
         return None

@@ -109,3 +109,26 @@ def test_data_store_config_templates_roundtrip(tmp_path):
     assert store.get_config_template(record["id"])["name"] == "Reasoning defaults"
     assert store.delete_config_template(record["id"])
     assert store.list_config_templates() == []
+
+
+def test_template_routes_reject_stale_model_revision_before_mutation(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from backend.routes import models as model_routes
+
+    store = DataStore(config_dir=str(tmp_path / "stale-config"))
+    monkeypatch.setattr(model_routes, "get_store", lambda: store)
+    stale = "old-revision"
+    save = model_routes.SaveConfigTemplateBody(
+        name="stale", expected_model_revision=stale,
+        config={"engine": "llama_cpp", "engines": {"llama_cpp": {"ctx_size": 4096}}},
+    )
+    apply = model_routes.ApplyConfigTemplateBody(
+        template_id="missing", expected_model_revision=stale,
+    )
+    with pytest.raises(HTTPException) as save_error:
+        model_routes._save_model_config_as_template_payload("missing", save)
+    with pytest.raises(HTTPException) as apply_error:
+        model_routes._apply_model_config_template_payload("missing", apply)
+    assert save_error.value.status_code == 409
+    assert apply_error.value.status_code == 409
+    assert store.list_config_templates() == []

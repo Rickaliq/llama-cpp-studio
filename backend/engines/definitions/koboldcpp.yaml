@@ -1,0 +1,46 @@
+# KoboldCpp is installed and versioned outside Studio. Studio owns a single
+# loopback GGUF process and exposes only its reviewed local-server controls.
+schema_version: 2
+id: koboldcpp
+label: KoboldCpp
+ui_kind: native
+repository_source: KoboldCpp
+install_kind: prebuilt
+runtime_kind: koboldcpp
+scanner_kind: llama_help
+active_path_fields:
+- binary_path
+artifact_formats:
+- gguf
+package_kinds:
+- single_file
+tasks:
+- text-generation
+input_modalities:
+- text
+output_modalities:
+- text
+experimental: true
+supports_embeddings: false
+launch_policy:
+  cpu_supported: true
+discovery:
+  parser: koboldcpp_help
+  probe_variants:
+  - executable:
+      kind: native_artifact
+      name: binary_path
+    argv_prefix:
+    - --help
+runtime_profiles:
+  default:
+    default: true
+    description: KoboldCpp local GGUF server
+    launch_family: koboldcpp_gguf_server
+    argv_prefix:
+    - --skiplauncher
+    - --host
+    - 127.0.0.1
+    port_binding:
+      flag: --port
+    upstream_model_name: model_stem

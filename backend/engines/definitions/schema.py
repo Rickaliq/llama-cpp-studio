@@ -763,7 +763,7 @@ def _validate_request_defaults(value: Any, where: str) -> Tuple[Tuple[str, Any],
 # adapter map, and proxy runtime kinds) without this module importing them.
 INSTALL_KINDS: FrozenSet[str] = frozenset({"cmake", "prebuilt", "python_venv"})
 RUNTIME_KINDS: FrozenSet[str] = frozenset(
-    {"llama_server", "lmdeploy", "onecat_vllm", "vllm", "sglang", "audio_cpp"}
+    {"llama_server", "lmdeploy", "onecat_vllm", "vllm", "sglang", "audio_cpp", "moe4all", "strata", "koboldcpp"}
 )
 SCANNER_KINDS: FrozenSet[str] = frozenset(
     {
@@ -773,6 +773,10 @@ SCANNER_KINDS: FrozenSet[str] = frozenset(
         "sglang_help",
         "sglang_diffusion_help",
         "audio_cpp",
+        "infr_help",
+        "koboldcpp_help",
+        "maya_ik2_help",
+        "strata_profile",
     }
 )
 
@@ -805,6 +809,7 @@ PROFILE_KEYS: FrozenSet[str] = frozenset(
         "runtime_switch",
         "launch_family",
         "launch_args",
+        "upstream_model_name",
     }
 )
 # A profile may NAME the launch mechanism that composes it (family profile)
@@ -814,7 +819,7 @@ PROFILE_KEYS: FrozenSet[str] = frozenset(
 # the profile only declares the Studio-owned port flag (and an optional
 # prefix). A family profile may not ALSO declare the keys the mechanism
 # composes: a declared-but-ignored key is worse than an absent one.
-LAUNCH_FAMILIES: FrozenSet[str] = frozenset({"gguf_llama_server"})
+LAUNCH_FAMILIES: FrozenSet[str] = frozenset({"gguf_llama_server", "infr_gguf_server", "profile_bundle_http_server", "koboldcpp_gguf_server", "maya_ik2_gguf_server"})
 FAMILY_PROFILE_KEYS: FrozenSet[str] = frozenset(
     {
         "description",
@@ -823,6 +828,7 @@ FAMILY_PROFILE_KEYS: FrozenSet[str] = frozenset(
         "argv_prefix",
         "port_binding",
         "launch_args",
+        "upstream_model_name",
     }
 )
 LAUNCH_ARG_KEYS: FrozenSet[str] = frozenset(
@@ -1622,6 +1628,10 @@ def _validate_profile(name: str, value: Any, where: str) -> Dict[str, Any]:
         family = _check_kind(
             "launch_family", value.get("launch_family"), LAUNCH_FAMILIES, item_where
         )
+        if "upstream_model_name" in value:
+            _check_kind(
+                "upstream_model_name", value.get("upstream_model_name"), {"stable_id", "model_stem"}, item_where
+            )
         disallowed = set(value) - FAMILY_PROFILE_KEYS
         _require(
             not disallowed,

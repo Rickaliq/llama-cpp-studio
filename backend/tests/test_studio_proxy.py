@@ -501,6 +501,48 @@ async def test_registry_readiness_requires_success_status(health_status):
 
 
 @pytest.mark.asyncio
+async def test_registry_strata_readiness_requires_loaded_true(monkeypatch):
+    """A 200 Strata health response with loaded=false is not model readiness."""
+    import backend.proxy.studio.registry as registry_module
+
+    class AliveEngine:
+        def poll(self):
+            return None
+
+    class HealthClient:
+        calls = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url):
+            type(self).calls += 1
+            loaded = type(self).calls >= 3
+            return httpx.Response(
+                200,
+                json={"status": "ok", "loaded": loaded, "model": "strata-qwen"},
+                request=httpx.Request("GET", url),
+            )
+
+    class Shim:
+        HTTPError = httpx.HTTPError
+        AsyncClient = HealthClient
+
+    monkeypatch.setattr(registry_module, "httpx", Shim)
+    registry = ProcessRegistry(lambda model: _spec(model), readiness_timeout=1.0)
+    generation = Generation("strata-qwen", "a" * 64, 8090, AliveEngine(), "strata")
+    generation.health_requires_loaded = True
+    await registry._wait_ready(generation)
+    assert HealthClient.calls >= 3
+
+
+@pytest.mark.asyncio
 async def test_registry_root_fallback_only_for_allowlisted_engines(monkeypatch):
     """ "/" liveness is reserved for engines known to lack /health."""
     import backend.proxy.studio.registry as registry_module
@@ -543,6 +585,53 @@ async def test_registry_root_fallback_only_for_allowlisted_engines(monkeypatch):
         assert any(url.endswith("/") for url in seen)
     finally:
         registry_module.httpx = original
+
+
+@pytest.mark.asyncio
+async def test_kobold_readiness_requires_loaded_model_list_not_root_liveness(monkeypatch):
+    """KoboldCpp reaches ready only when /v1/models reports a loaded model."""
+    import backend.proxy.studio.registry as registry_module
+
+    class AliveEngine:
+        def poll(self):
+            return None
+
+    class KoboldClient:
+        calls = 0
+        root_calls = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url):
+            if url.endswith("/health"):
+                return httpx.Response(404, request=httpx.Request("GET", url))
+            if url.endswith("/v1/models"):
+                type(self).calls += 1
+                payload = (
+                    {"data": [{"id": "tiny-model", "status": {"value": "loading"}}]}
+                    if type(self).calls < 2
+                    else {"data": [{"id": "tiny-model", "status": {"value": "loaded"}}]}
+                )
+                return httpx.Response(200, json=payload, request=httpx.Request("GET", url))
+            type(self).root_calls += 1
+            return httpx.Response(200, request=httpx.Request("GET", url))
+
+    class Shim:
+        HTTPError = httpx.HTTPError
+        AsyncClient = KoboldClient
+
+    monkeypatch.setattr(registry_module, "httpx", Shim)
+    registry = ProcessRegistry(lambda model: _spec(model), readiness_timeout=1.0)
+    await registry._wait_ready(Generation("demo", "a" * 64, 1, AliveEngine(), "koboldcpp"))
+    assert KoboldClient.calls >= 2
+    assert KoboldClient.root_calls == 0
 
 
 @pytest.mark.asyncio

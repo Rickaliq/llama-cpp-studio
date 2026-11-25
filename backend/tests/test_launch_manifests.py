@@ -226,16 +226,64 @@ def _model(engine: str, **section):
     }
 
 
+def _strata_model(tmp_path: Path, python: str):
+    import json
+
+    root = tmp_path / "strata-runtime"
+    (root / "serve").mkdir(parents=True)
+    (root / "serve" / "server.py").write_text("# not executed\n")
+    (root / "lib").mkdir()
+    (root / "hip").mkdir()
+    pack = root / "pack"
+    pack.mkdir()
+    (pack / "tokenizer").mkdir()
+    paths = {}
+    for name in ("native.gguf", "ple.gguf", "expert-profile.bin"):
+        path = root / name
+        path.write_text("fixture\n")
+        paths[name] = str(path)
+    worker = root / "strata"
+    worker.write_text("# not executed\n")
+    worker.chmod(0o755)
+    args = ["--pack", str(pack), "--native", paths["native.gguf"],
+            "--ple-gguf", paths["ple.gguf"], "--expert-profile", paths["expert-profile.bin"],
+            "--expert-cache", "5000", "--prefill", "2048", "--spec", "2",
+            "--max-context", "4096", "--kv", "q4_0", "--vram-reserve-mib", "3072",
+            "--mmap-experts", "--gpu", "0", "--memory-limit-mib", "16384",
+            "--conversation-cache-mib", "0", "--prompt-cache", "0"]
+    profile_path = tmp_path / "strata-profile.json"
+    profile_path.write_text(json.dumps({
+        "exe": str(worker), "args": args, "cwd": str(root),
+        "tokenizer": str(pack / "tokenizer"), "model_name": "strata-test-model",
+        "lib_dirs": [str(root / "lib")], "host": "127.0.0.1", "port": 8090,
+        "parallel": 1, "max_queue": 0, "offline": True, "backend": "hip",
+        "env": {"STRATA_ROCBLAS_TUNING": str(root / "hip")},
+    }))
+    return {
+        "id": "local-strata-test", "local_path": str(profile_path),
+        "format": "strata_bundle",
+        "artifact": {"format": "strata_bundle", "package_kind": "prepared_bundle", "path": str(profile_path)},
+        "compatible_engines": ["strata"],
+        "config": {"engine": "strata", "engines": {"strata": {"runtime_env": {"FOO": "bar baz"}}}},
+    }
+
+
 @pytest.mark.parametrize("engine", sorted(VALID_ENGINE_IDS))
 def test_each_engine_compiles_structured_argv(monkeypatch, tmp_path, engine):
     _patch_resolvers(monkeypatch, tmp_path)
     section = {"ctx_size": 2048, "runtime_env": {"FOO": "bar baz", "EMPTY": ""}}
     if engine == "sglang_v100":
         section["runtime_env"] = {"FOO": "bar baz"}
-    compiled = compile_model_runtime(_model(engine, **section))
+    model = _strata_model(tmp_path, str(tmp_path / "strata" / "bin" / "python")) if engine == "strata" else _model(engine, **section)
+    if engine == "strata":
+        model["config"]["engines"]["strata"]["runtime_env"] = section["runtime_env"]
+    compiled = compile_model_runtime(model)
     assert compiled.launch.engine_id == engine
     assert compiled.launch.executable
-    assert PORT_PLACEHOLDER in compiled.launch.argv
+    if engine == "moe4all":
+        assert {"runtime": "loopback_addr"} in compiled.launch.argv
+    else:
+        assert PORT_PLACEHOLDER in compiled.launch.argv
     assert compiled.launch.env.set["FOO"] == "bar baz"
     assert "$HOME" not in compiled.engine_command
     if engine == "audio_cpp":
@@ -249,7 +297,7 @@ def test_each_engine_compiles_structured_argv(monkeypatch, tmp_path, engine):
             "out": ["text"],
             "context": 2048,
         }
-    elif engine in {"vllm", "1cat_vllm"}:
+    elif engine in {"vllm", "1cat_vllm", "moe4all"}:
         assert compiled.proxy.capabilities == {"in": ["text"], "out": ["text"]}
     elif engine == "audio_cpp":
         assert compiled.proxy.capabilities == {"disableAuto": True}

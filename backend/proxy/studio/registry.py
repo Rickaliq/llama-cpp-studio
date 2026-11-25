@@ -30,12 +30,25 @@ class RegistryError(RuntimeError):
     pass
 
 
-# Engines explicitly known to expose no /health route. For these only, a
-# persistent 404 on /health falls back to probing "/" for liveness. Every
-# engine Studio ships (llama.cpp family, vllm, sglang, lmdeploy, audio.cpp)
-# serves /health that reports load completion, so this set is deliberately
-# empty; add an engine id only after verifying it has no health endpoint.
+# Engines explicitly known to expose no /health route. These engines may use
+# a validated liveness fallback after a persistent /health 404.
 ENGINES_WITHOUT_HEALTH_ROUTE: frozenset[str] = frozenset()
+
+
+def _kobold_model_list_loaded(response: Any) -> bool:
+    """KoboldCpp readiness requires its model list to explicitly report loaded."""
+    try:
+        payload = response.json()
+    except (ValueError, AttributeError):
+        return False
+    models = payload.get("data") if isinstance(payload, dict) else None
+    return isinstance(models, list) and any(
+        isinstance(model, dict)
+        and bool(str(model.get("id") or "").strip())
+        and isinstance(model.get("status"), dict)
+        and str(model["status"].get("value") or "").lower() == "loaded"
+        for model in models
+    )
 
 
 @dataclass
@@ -46,6 +59,7 @@ class Generation:
     process: subprocess.Popen[str]
     engine_id: str = ""
     engine_install_id: str = ""
+    health_requires_loaded: bool = False
     created_at: float = field(default_factory=time.time)
     stats_since: float = field(default_factory=time.time)
     ready: bool = False
@@ -556,6 +570,7 @@ class ProcessRegistry:
             process,
             spec.engine_id,
             engine_install_id=getattr(spec, "engine_install_id", "") or "",
+            health_requires_loaded=bool(getattr(spec, "health_requires_loaded", False)),
         )
         # A restarted build may expose a different optional counting route than
         # the previous process under the same nominal revision. Re-probe once.
@@ -628,7 +643,32 @@ class ProcessRegistry:
                     await asyncio.sleep(0.1)
                     continue
                 if 200 <= response.status_code < 300:
+                    if generation.health_requires_loaded:
+                        try:
+                            health = response.json()
+                        except ValueError:
+                            health = None
+                        if not isinstance(health, dict) or health.get("loaded") is not True:
+                            await asyncio.sleep(0.1)
+                            continue
                     return
+                if generation.engine_id == "koboldcpp" and response.status_code == 404:
+                    # KoboldCpp's documented OpenAI model-list endpoint
+                    # identifies whether a model is loaded. Require the
+                    # explicit loaded state; do not treat its Web UI root or
+                    # an id-only model list as readiness for Studio routing.
+                    try:
+                        models_response = await client.get(generation.upstream + "/v1/models")
+                    except httpx.HTTPError:
+                        models_response = None
+                    if (
+                        models_response is not None
+                        and 200 <= models_response.status_code < 300
+                        and _kobold_model_list_loaded(models_response)
+                    ):
+                        return
+                    await asyncio.sleep(0.1)
+                    continue
                 if allow_root_fallback and response.status_code == 404:
                     consecutive_missing += 1
                     if consecutive_missing % 50 == 1:
@@ -846,6 +886,8 @@ def _resolve_arg(item: object, port: int, artifact_dir: Optional[str]) -> str:
         return item
     if isinstance(item, Mapping) and item.get("runtime") == "port":
         return str(port)
+    if isinstance(item, Mapping) and item.get("runtime") == "loopback_addr":
+        return f"127.0.0.1:{port}"
     if isinstance(item, Mapping) and item.get("artifact") and artifact_dir:
         name = str(item["artifact"])
         candidate = os.path.realpath(os.path.join(artifact_dir, name))

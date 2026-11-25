@@ -716,7 +716,7 @@ def test_every_native_gguf_engine_follows_its_declaration():
     """
     from backend.engines.definitions import load_default_engine_definitions
     from backend.engines.registry import GGUF_ENGINE_IDS, SHIPPED_ENGINE_IDS
-    from backend.proxy import gguf_launch
+    from backend.proxy import gguf_launch, infr_launch
 
     definitions = load_default_engine_definitions()
     native = [
@@ -732,7 +732,10 @@ def test_every_native_gguf_engine_follows_its_declaration():
             assert profile_launch.profile_launch_definition(engine_id) is None, engine_id
             continue
         spec = definition.profile("")
-        assert spec.get("launch_family") == gguf_launch.LAUNCH_FAMILY, engine_id
+        assert spec.get("launch_family") in {
+            gguf_launch.LAUNCH_FAMILY,
+            infr_launch.LAUNCH_FAMILY,
+        }, engine_id
         assert "model_binding" not in spec, engine_id
         assert "executable" not in spec, engine_id
         assert profile_launch.profile_launch_definition(engine_id) is not None, engine_id

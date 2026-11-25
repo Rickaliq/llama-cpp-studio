@@ -90,6 +90,9 @@ def _substitute_argv(raw, *, port: str, generation: str, root: str) -> list[str]
         if item.get("runtime") == "port":
             argv.append(port)
             continue
+        if item.get("runtime") == "loopback_addr":
+            argv.append(f"127.0.0.1:{port}")
+            continue
         artifact = item.get("artifact")
         if isinstance(artifact, str):
             path = os.path.join(generation, "artifacts", artifact)

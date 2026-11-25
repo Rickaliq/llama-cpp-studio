@@ -13,6 +13,13 @@
       </template>
       <template #actions>
         <Button
+          label="Import local GGUF"
+          icon="pi pi-folder-open"
+          severity="secondary"
+          outlined
+          @click="showLocalImport = true"
+        />
+        <Button
           icon="pi pi-refresh"
           text
           severity="secondary"
@@ -366,6 +373,16 @@
               </span>
             </button>
             <div class="group-meta">
+              <a
+                v-if="huggingFaceSourceUrl({ ...primaryQuant(group), source: primaryQuant(group)?.source || group.source, huggingface_id: group.huggingface_id })"
+                :href="huggingFaceSourceUrl({ ...primaryQuant(group), source: primaryQuant(group)?.source || group.source, huggingface_id: group.huggingface_id })"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="hf-link"
+                @click.stop
+              >
+                <i class="pi pi-external-link" aria-hidden="true" /> Hugging Face source
+              </a>
               <span
                 v-if="group.quantizations?.length"
                 class="group-delete-preview"
@@ -431,6 +448,16 @@
               </div>
             </div>
             <div class="group-meta">
+              <a
+                v-if="huggingFaceSourceUrl({ ...primaryQuant(group), source: primaryQuant(group)?.source || group.source, huggingface_id: group.huggingface_id })"
+                :href="huggingFaceSourceUrl({ ...primaryQuant(group), source: primaryQuant(group)?.source || group.source, huggingface_id: group.huggingface_id })"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="hf-link"
+                @click.stop
+              >
+                <i class="pi pi-external-link" aria-hidden="true" /> Hugging Face source
+              </a>
               <ModelStartStopButton
                 v-if="primaryQuant(group)"
                 :name="groupTitle(group)"
@@ -530,6 +557,77 @@
       </div>
     </div>
 
+    <Dialog
+      v-model:visible="showLocalImport"
+      modal
+      header="Import a local model"
+      :style="{ width: 'min(42rem, 95vw)' }"
+    >
+      <p>
+        Studio references the existing files. Removing this library entry does not delete them.
+        Files must be in a configured model folder.
+      </p>
+      <p>
+        Choose companions only when you have confirmed that they match this exact model and engine.
+        An MTP filename alone does not establish compatibility.
+      </p>
+      <form @submit.prevent="importLocalModel" style="display: grid; gap: 0.8rem">
+        <label
+          >Display name
+          <input v-model="localImport.name" style="width: 100%" placeholder="Optional"
+        /></label>
+        <label
+          >Hugging Face repository
+          <input
+            v-model="localImport.huggingface_repo"
+            style="width: 100%"
+            placeholder="Optional · owner/repo or https://huggingface.co/owner/repo"
+            aria-describedby="local-import-repo-note"
+          />
+        </label>
+        <small id="local-import-repo-note">
+          Optional provenance link. Enter the repository you believe matches these files; Studio
+          does not verify that they came from it.
+        </small>
+        <div>
+          <Button
+            type="button"
+            label="Find repository suggestions"
+            severity="secondary"
+            outlined
+            :loading="localSourceSearchBusy"
+            :disabled="localSourceSearchBusy"
+            @click="searchLocalSourceMatches"
+          />
+          <small> Suggestions are search results only. Review and choose a match yourself. </small>
+          <p v-if="localSourceSearchError" role="alert">{{ localSourceSearchError }}</p>
+          <ul v-if="localSourceSearchResults.length" aria-label="Hugging Face repository suggestions">
+            <li v-for="result in localSourceSearchResults" :key="result.modelId || result.id">
+              <button
+                type="button"
+                @click="localImport.huggingface_repo = result.modelId || result.id"
+              >
+                {{ result.modelId || result.id }}
+              </button>
+            </li>
+          </ul>
+        </div>
+        <label
+          >Model GGUF path <input v-model="localImport.weight_path" style="width: 100%" required
+        /></label>
+        <label
+          >Matching mmproj path
+          <input v-model="localImport.mmproj_path" style="width: 100%" placeholder="Optional"
+        /></label>
+        <label
+          >Matching MTP draft path
+          <input v-model="localImport.mtp_path" style="width: 100%" placeholder="Optional"
+        /></label>
+        <p v-if="localImportError" role="alert">{{ localImportError }}</p>
+        <Button type="submit" label="Add to library" :loading="localImportBusy" />
+      </form>
+    </Dialog>
+
     <!-- HuggingFace Token Dialog -->
     <Dialog
       v-model:visible="showTokenDialog"
@@ -599,8 +697,10 @@ import {
   formatLabel,
 } from '@/utils/modelPresentation'
 import { isAudioPackage } from '@/utils/audioModel'
+import { huggingFaceSourceUrl, normalizeHuggingFaceRepo } from '@/utils/modelSource'
 import { useQueryState } from '@/composables/useQueryState'
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import axios from 'axios'
 import { watchDialogFocus } from '@/composables/useFocusReturn'
 import { useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
@@ -640,6 +740,46 @@ const router = useRouter()
 const confirm = useConfirm()
 const toast = useToast()
 const modelStore = useModelStore()
+const showLocalImport = ref(false)
+const localImportBusy = ref(false)
+const localImportError = ref('')
+const localSourceSearchBusy = ref(false)
+const localSourceSearchError = ref('')
+const localSourceSearchResults = ref([])
+const localImport = ref({ name: '', weight_path: '', mmproj_path: '', mtp_path: '', huggingface_repo: '' })
+async function searchLocalSourceMatches() {
+  const rawQuery = String(localImport.value.huggingface_repo || localImport.value.name || '').trim()
+  const query = normalizeHuggingFaceRepo(rawQuery) || rawQuery
+  if (!query) {
+    localSourceSearchError.value = 'Enter a repository or model name to search.'
+    return
+  }
+  localSourceSearchBusy.value = true
+  localSourceSearchError.value = ''
+  try {
+    localSourceSearchResults.value = await modelStore.searchModels(query, 8, 'gguf')
+  } catch (error) {
+    localSourceSearchError.value = error?.response?.data?.detail || error.message || 'Search failed'
+  } finally {
+    localSourceSearchBusy.value = false
+  }
+}
+async function importLocalModel() {
+  localImportBusy.value = true
+  localImportError.value = ''
+  try {
+    await axios.post('/api/models/import-local', localImport.value)
+    await modelStore.fetchModels()
+    showLocalImport.value = false
+    localImport.value = { name: '', weight_path: '', mmproj_path: '', mtp_path: '', huggingface_repo: '' }
+    localSourceSearchResults.value = []
+    toast.add({ severity: 'success', summary: 'Local model added', life: 3000 })
+  } catch (error) {
+    localImportError.value = error?.response?.data?.detail || error.message || 'Import failed'
+  } finally {
+    localImportBusy.value = false
+  }
+}
 const progressStore = useProgressStore()
 const enginesStore = useEnginesStore()
 const connectVisible = ref(false)
@@ -1320,8 +1460,12 @@ async function performModelDelete(run, params, summary = 'Model removed') {
 }
 
 function confirmDeleteModel(modelId) {
+  const local =
+    modelStore.allQuantizations.find((q) => q.id === modelId)?.source?.provider === 'local'
   requireSingleConfirmation(confirm, {
-    message: 'Remove this model from the library? Downloaded files will be deleted from disk.',
+    message: local
+      ? 'Remove this library entry? Your original model files will be kept.'
+      : 'Remove this model from the library? Downloaded files will be deleted from disk.',
     header: 'Confirm Remove',
     icon: 'pi pi-exclamation-triangle',
     acceptClass: 'p-button-danger',
@@ -1679,6 +1823,19 @@ onUnmounted(() => {
   align-items: center;
   gap: 0.25rem;
   flex-shrink: 0;
+}
+
+.hf-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--accent-cyan, #22d3ee);
+  font-size: 0.8125rem;
+  text-decoration: none;
+}
+
+.hf-link:hover {
+  text-decoration: underline;
 }
 
 .group-delete-preview {

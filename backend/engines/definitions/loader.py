@@ -11,6 +11,7 @@ offending file path. See the schema module docstring for phase scope.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -28,6 +29,7 @@ TEMPLATES_FILENAME = "_templates.yaml"
 # default loader scans *.yaml at this level only, so this subdirectory is
 # never picked up at runtime; tests load it explicitly.
 REFERENCE_DEFINITIONS_DIR = os.path.join(DEFINITIONS_DIR, "reference")
+EXTERNAL_DEFINITIONS_DIRNAME = "engine-definitions"
 
 
 @dataclass(frozen=True)
@@ -140,13 +142,28 @@ def _validate_transform_assets(definition: EngineDefinition) -> None:
                 ) from exc
 
 
-def load_engine_definitions(directory: str = DEFINITIONS_DIR) -> EngineDefinitionRegistry:
-    """Load, expand, and validate every engine definition in ``directory``."""
+def load_engine_definitions(
+    directory: str = DEFINITIONS_DIR,
+    *,
+    inherited_templates: Optional[Mapping[str, Dict[str, Any]]] = None,
+) -> EngineDefinitionRegistry:
+    """Load, expand, and validate every engine definition in ``directory``.
+
+    An additive definitions directory may inherit shipped templates. Template
+    names cannot shadow inherited names, keeping the shipped definitions stable.
+    """
     directory = os.fspath(directory)
     templates_path = os.path.join(directory, TEMPLATES_FILENAME)
     if not os.path.isdir(directory):
         raise DefinitionError(f"definitions directory not found: {directory}")
-    templates = _load_templates(templates_path) if os.path.exists(templates_path) else {}
+    local_templates = _load_templates(templates_path) if os.path.exists(templates_path) else {}
+    inherited_templates = dict(inherited_templates or {})
+    collisions = sorted(set(inherited_templates) & set(local_templates))
+    if collisions:
+        raise DefinitionError(
+            f"{templates_path}: templates cannot replace inherited names {collisions}"
+        )
+    templates = {**inherited_templates, **local_templates}
 
     filenames = sorted(
         name
@@ -180,8 +197,45 @@ _default_registry: Optional[EngineDefinitionRegistry] = None
 
 
 def load_default_engine_definitions() -> EngineDefinitionRegistry:
-    """Process-wide singleton: definitions load and validate once at startup."""
+    """Load shipped definitions plus optional user definitions once at startup.
+
+    External definitions live under the Studio data directory, beside its
+    other user configuration. They are additive: an external file may add an
+    engine ID, but cannot replace a shipped definition. Keeping the extension
+    point here lets local tools register engines without editing this package.
+    """
     global _default_registry
     if _default_registry is None:
-        _default_registry = load_engine_definitions()
+        shipped = load_engine_definitions()
+        # Import lazily: definitions load while the registry itself is being
+        # initialized, so paths must not import DataStore or engine modules.
+        from backend.paths import studio_data_dir
+
+        external_dir = os.environ.get("STUDIO_ENGINE_DEFINITIONS_DIR", "").strip()
+        if external_dir:
+            external_dir = os.path.abspath(os.path.expanduser(external_dir))
+        else:
+            external_dir = os.path.join(
+                studio_data_dir(), "config", EXTERNAL_DEFINITIONS_DIRNAME
+            )
+        external_path = Path(external_dir)
+        if external_path.is_dir():
+            templates_path = os.path.join(DEFINITIONS_DIR, TEMPLATES_FILENAME)
+            shipped_templates = (
+                _load_templates(templates_path) if os.path.exists(templates_path) else {}
+            )
+            external = load_engine_definitions(
+                str(external_path), inherited_templates=shipped_templates
+            )
+            collisions = sorted(set(shipped.definitions) & set(external.definitions))
+            if collisions:
+                raise DefinitionError(
+                    "external engine definitions cannot replace shipped IDs: "
+                    + ", ".join(collisions)
+                )
+            _default_registry = EngineDefinitionRegistry(
+                definitions={**shipped.definitions, **external.definitions}
+            )
+        else:
+            _default_registry = shipped
     return _default_registry

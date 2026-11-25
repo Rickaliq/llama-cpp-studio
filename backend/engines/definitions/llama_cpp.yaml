@@ -116,6 +116,7 @@ build_options:
   primary_keys:
   - blas
   - cuda
+  - vulkan
   categories:
   - id: backends
     label: GPU & compute backends
@@ -156,6 +157,17 @@ build_options:
     category: backends
     cmake: GGML_CUDA
     special: cuda
+    engines:
+    - ik_llama
+    - llama_cpp
+  - key: vulkan
+    field: enable_vulkan
+    kind: bool
+    default: false
+    label: Vulkan
+    desc: "GGML_VULKAN — Vulkan GPU backend; building requires Vulkan development headers and glslc."
+    category: backends
+    cmake: GGML_VULKAN
     engines:
     - ik_llama
     - llama_cpp

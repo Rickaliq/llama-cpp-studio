@@ -133,7 +133,7 @@ def test_collect_model_refresh_plan_reports_mtp_path_correction(monkeypatch):
     monkeypatch.setattr(
         hf,
         "_list_remote_gguf_weight_files",
-        lambda hf_id, quant: ["gemma-4-31B-it-Q8_0.gguf"],
+        lambda hf_id, quant, artifact_key=None: ["gemma-4-31B-it-Q8_0.gguf"],
     )
     monkeypatch.setattr(
         hf,
@@ -532,7 +532,7 @@ def test_collect_model_refresh_plan_includes_weights_and_companions(
     monkeypatch.setattr(
         hf,
         "_list_remote_gguf_weight_files",
-        lambda hf_id, quant: ["model-Q4_K_M.gguf", "model-Q4_K_M-00001-of-00002.gguf"],
+        lambda hf_id, quant, artifact_key=None: ["model-Q4_K_M.gguf", "model-Q4_K_M-00001-of-00002.gguf"],
     )
     monkeypatch.setattr(
         hf,

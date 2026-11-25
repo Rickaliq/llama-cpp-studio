@@ -47,14 +47,40 @@
                 severity="success"
               />
               <a
-                v-if="model.huggingface_id"
-                :href="`https://huggingface.co/${model.huggingface_id}`"
+                v-if="huggingFaceSourceUrl(model)"
+                :href="huggingFaceSourceUrl(model)"
                 target="_blank"
+                rel="noopener noreferrer"
                 class="hf-link"
               >
-                <i class="pi pi-external-link" /> {{ model.huggingface_id }}
+                <i class="pi pi-external-link" /> {{ huggingFaceSourceId(model) }}
               </a>
             </div>
+            <form
+              v-if="isLocalModel"
+              class="model-source-editor"
+              @submit.prevent="saveSourceRepository"
+            >
+              <label for="source-huggingface-repo">Hugging Face repository</label>
+              <InputText
+                id="source-huggingface-repo"
+                v-model="sourceRepositoryDraft"
+                placeholder="Optional · owner/repo or Hugging Face URL"
+                :disabled="sourceRepositoryBusy"
+              />
+              <Button
+                type="submit"
+                label="Save source"
+                size="small"
+                :loading="sourceRepositoryBusy"
+                :disabled="sourceRepositoryBusy"
+              />
+              <small>
+                User-provided provenance link. Studio does not verify that these files came from
+                this repository. Clear the field and save to remove it.
+              </small>
+              <p v-if="sourceRepositoryError" role="alert">{{ sourceRepositoryError }}</p>
+            </form>
           </div>
         </template>
         <template v-if="!loading && model" #actions>
@@ -235,7 +261,15 @@
             <div class="params-grid">
               <div v-for="param in basicParams" :key="param.key" class="param-field">
                 <label :for="`basic-${param.key}`" class="param-field__label">
-                  <span class="param-field__name">{{ param.label }}</span>
+                  <span class="param-field__name">
+                    {{ param.label }}
+                    <i
+                      class="pi pi-info-circle param-info"
+                      tabindex="0"
+                      :aria-label="`About ${param.label}`"
+                      v-tooltip.top="paramDescriptionTooltip(param)"
+                    />
+                  </span>
                   <code class="param-key-hint">{{ param.key }}</code>
                   <Tag
                     class="param-field__state"
@@ -243,15 +277,61 @@
                     :severity="isExplicitOverride(param) ? 'info' : 'secondary'"
                   />
                 </label>
-                <InputNumber
+                <Select
+                  v-if="param.value_kind === 'flag' && param.negative_flag"
                   :input-id="`basic-${param.key}`"
                   v-model="config[param.key]"
+                  @update:model-value="markBasicParamActive(param.key)"
+                  :options="triStateOptions"
+                  optionLabel="label"
+                  optionValue="value"
+                  placeholder="Default"
+                  showClear
+                  class="param-input"
+                  :disabled="param.supported === false"
+                />
+                <Select
+                  v-else-if="param.options && param.options.length"
+                  :input-id="`basic-${param.key}`"
+                  v-model="config[param.key]"
+                  @update:model-value="markBasicParamActive(param.key)"
+                  :options="param.options"
+                  optionLabel="label"
+                  optionValue="value"
                   :placeholder="param.default != null ? String(param.default) : 'Engine default'"
+                  :showClear="param.required !== true"
+                  class="param-input"
+                  :disabled="param.supported === false"
+                />
+                <ToggleSwitch
+                  v-else-if="param.type === 'bool'"
+                  :input-id="`basic-${param.key}`"
+                  v-model="config[param.key]"
+                  @update:model-value="markBasicParamActive(param.key)"
+                  :disabled="param.supported === false"
+                />
+                <InputNumber
+                  v-else-if="param.type === 'int' || param.type === 'float'"
+                  :input-id="`basic-${param.key}`"
+                  v-model="config[param.key]"
+                  @update:model-value="markBasicParamActive(param.key)"
+                  :placeholder="param.default != null ? String(param.default) : 'Engine default'"
+                  :minFractionDigits="param.type === 'float' ? 1 : 0"
+                  :maxFractionDigits="param.type === 'float' ? 4 : 0"
                   class="param-input"
                   :disabled="param.supported === false"
                   :min="param.min"
                   :max="param.max"
                   :pt="{ pcInputText: { root: { 'aria-describedby': `basic-help-${param.key}` } } }"
+                />
+                <InputText
+                  v-else
+                  :id="`basic-${param.key}`"
+                  v-model="config[param.key]"
+                  @update:model-value="markBasicParamActive(param.key)"
+                  :placeholder="param.default != null ? String(param.default) : 'Engine default'"
+                  class="param-input"
+                  :disabled="param.supported === false"
                 />
                 <small :id="`basic-help-${param.key}`" class="param-default-help">{{
                   parameterHelp(param)
@@ -573,7 +653,16 @@
       </div>
 
       <Message
-        v-if="!isAudioEngine && selectedParamRegistry.scan_error"
+        v-if="config.engine === 'strata'"
+        severity="info"
+        :closable="false"
+        class="config-scan-message"
+      >
+        Strata uses a profile bundle instead of a scanned CLI catalog. Configure the bundle with the
+        external inference companion.
+      </Message>
+      <Message
+        v-else-if="!isAudioEngine && selectedParamRegistry.scan_error"
         severity="warn"
         :closable="false"
         class="config-scan-message"
@@ -827,8 +916,8 @@
               <div v-if="(companionFiles.engram_files || []).length" class="companion-field">
                 <label>Engram tables</label>
                 <small class="config-muted-hint">
-                  These are swappable n-gram table shards; use the repo's set_split.py and
-                  rename the table to the target quant's table shard.
+                  These are swappable n-gram table shards; use the repo's set_split.py and rename
+                  the table to the target quant's table shard.
                 </small>
                 <ul class="engram-file-list">
                   <li v-for="table in companionFiles.engram_files" :key="table.filename">
@@ -860,9 +949,7 @@
                   class="pi pi-info-circle param-info"
                   tabindex="0"
                   aria-label="About API alias"
-                  v-tooltip.top="
-                    aliasTooltip
-                  "
+                  v-tooltip.top="aliasTooltip"
                 />
               </label>
               <InputText
@@ -1486,6 +1573,7 @@
 
 <script setup>
 import { formatLabel, taskLabel } from '@/utils/modelPresentation'
+import { huggingFaceSourceId, huggingFaceSourceUrl } from '@/utils/modelSource'
 import UnsavedChangesDialog from '@/components/common/UnsavedChangesDialog.vue'
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -1558,7 +1646,21 @@ const draftOffer = ref(null)
 const draftsEnabled = ref(false)
 const applyImpactVisible = ref(false)
 const applyWithheld = ref(null)
-const BASIC_PARAM_KEYS = ['ctx_size', 'n_gpu_layers', 'parallel', 'threads']
+const BASIC_PARAM_KEYS = [
+  'ctx_size',
+  'n_gpu_layers',
+  'gpu_layers',
+  'parallel',
+  'threads',
+  'temperature',
+  'temp',
+  'top_k',
+  'top_p',
+  'jinja',
+  'flash_attn',
+  'cache_type_k',
+  'cache_type_v',
+]
 const saving = ref(false)
 const persistenceNotice = ref(null)
 const persistenceAction = ref('save')
@@ -1609,14 +1711,28 @@ async function refreshTemplateMutation() {
 const refreshingModel = ref(false)
 const companionsLoading = ref(false)
 const companionBusyField = ref(null)
-const companionFiles = ref({ mmproj_files: [], mtp_files: [], dflash_files: [], dspark_files: [], engram_files: [] })
+const companionFiles = ref({
+  mmproj_files: [],
+  mtp_files: [],
+  dflash_files: [],
+  dspark_files: [],
+  engram_files: [],
+})
 const selectedMmproj = ref('')
 const selectedMtp = ref('')
 const selectedDflash = ref('')
 const selectedDspark = ref('')
 const model = ref(null)
+const sourceRepositoryDraft = ref('')
+const sourceRepositoryBusy = ref(false)
+const sourceRepositoryError = ref('')
+const isLocalModel = computed(() => model.value?.source?.provider === 'local')
 const config = ref({})
 const savedConfig = ref({}) // for reset
+const setupDefaultsValues = ref({})
+const setupDefaultsCatalog = ref([])
+const seededSetupDefaultEngines = ref(new Set())
+let setupDefaultsRequestId = 0
 const paramRegistry = ref({
   sections: [],
   runtime_profiles: {},
@@ -1729,8 +1845,9 @@ const fallbackEngineOptions = FALLBACK_ENGINE_OPTIONS
 const curatedPackageKinds = ['prepared_bundle', 'builtin']
 const inferredEnginesByFormat = ENGINE_IDS_BY_FALLBACK_FORMAT
 
-function inferredEnginesForModel(options, fmt, packageKind) {
+function inferredEnginesForModel(options, fmt, packageKind, quantization = '') {
   if (curatedPackageKinds.includes(packageKind)) return ['audio_cpp']
+  if (/^(?:PQ|PTQ)\d/i.test(String(quantization || ''))) return []
   const fromDescriptors = options
     .filter((option) => {
       const formats = option.descriptor?.artifact_formats
@@ -1759,7 +1876,9 @@ const engineOptions = computed(() => {
     : []
   const fmt = String(model.value?.format || '').toLowerCase()
   const packageKind = model.value?.artifact?.package_kind || model.value?.package_kind
-  const inferred = inferredEnginesForModel(options, fmt, packageKind)
+  const quantization = String(model.value?.quantization || '')
+  const nonstandardQuant = /^(?:PQ|PTQ)\d/i.test(quantization)
+  const inferred = inferredEnginesForModel(options, fmt, packageKind, quantization)
   const curated = curatedPackageKinds.includes(packageKind)
   const allowed = new Set(curated && verified.length ? verified : [...verified, ...inferred])
   return options.map((option) => {
@@ -1770,6 +1889,8 @@ const engineOptions = computed(() => {
       disabledReason:
         option.descriptor?.enabled === false
           ? 'Disabled by the AUDIO_CPP_ENABLED feature gate'
+          : nonstandardQuant && !verified.includes(option.value)
+            ? 'No registered engine declares support for this Bonsai quantization'
           : compatible
             ? ''
             : `Not compatible with this ${packageKind || fmt || 'model'} artifact`,
@@ -1781,9 +1902,7 @@ function isAudioPanel(engineId) {
   return ENGINE_DESCRIPTORS[engineId]?.configPanel === 'audio'
 }
 const isAudioEngine = computed(() => isAudioPanel(config.value.engine))
-const engineConfigCopy = computed(
-  () => ENGINE_DESCRIPTORS[config.value.engine]?.configCopy || {},
-)
+const engineConfigCopy = computed(() => ENGINE_DESCRIPTORS[config.value.engine]?.configCopy || {})
 const stableIdLabel = computed(() => engineConfigCopy.value.stableIdLabel || 'Stable ID')
 const stableIdAria = computed(
   () => engineConfigCopy.value.stableIdAria || 'Stable Studio proxy model ID',
@@ -1800,9 +1919,7 @@ function runtimeKeyFor(engineId) {
 const engineRuntimeKey = computed(() => runtimeKeyFor(config.value.engine))
 const isSglangEngine = computed(() => Boolean(engineRuntimeKey.value))
 const sglangRuntimeOptions = SGLANG_RUNTIME_OPTIONS
-const sglangRuntime = computed(() =>
-  normalizeSglangRuntime(config.value[engineRuntimeKey.value]),
-)
+const sglangRuntime = computed(() => normalizeSglangRuntime(config.value[engineRuntimeKey.value]))
 function normalizeSglangRuntime(runtime) {
   return runtime === 'diffusion' ? 'diffusion' : 'llm'
 }
@@ -1959,6 +2076,41 @@ const catalogParamList = computed(() => {
   return out
 })
 
+const setupDefaultParams = computed(() => {
+  const catalog = setupDefaultsCatalog.value
+  const allowed = Array.isArray(catalog)
+    ? catalog
+    : catalog && typeof catalog === 'object'
+      ? Object.entries(catalog).map(([key, value]) => ({ key, ...value }))
+      : []
+  const byKey = new Map(catalogParamList.value.map((param) => [param.key, param]))
+  return allowed
+    .map((item) => {
+      const key = typeof item === 'string' ? item : item?.key
+      if (!key) return null
+      const scanned = byKey.get(key)
+      if (!scanned) return typeof item === 'string' ? { key, label: key, supported: false } : item
+      return {
+        ...scanned,
+        ...item,
+        key,
+        min: item.minimum ?? item.min ?? scanned.min,
+        max: item.maximum ?? item.max ?? scanned.max,
+        supported: item.supported ?? scanned.supported,
+      }
+    })
+    .filter((param) => {
+      if (!param) return false
+      return (
+        param.scope === 'process' &&
+        param.transport === 'server_flag' &&
+        !param.reserved &&
+        !param.read_only &&
+        Boolean(param.primary_flag)
+      )
+    })
+})
+
 const catalogParamByKey = computed(() => {
   const m = new Map()
   for (const s of catalogSections.value) {
@@ -2034,6 +2186,7 @@ const hasUnsavedChanges = computed(() => {
   try {
     return (
       !requestAliasesValid.value ||
+      seededSetupDefaultEngines.value.size > 0 ||
       JSON.stringify(config.value) !== JSON.stringify(savedConfig.value)
     )
   } catch {
@@ -2212,6 +2365,9 @@ function closeSecondaryActions(event) {
   event.currentTarget.open = false
   event.currentTarget.querySelector('summary')?.focus()
 }
+function markBasicParamActive(key) {
+  if (!activeParamKeys.value.includes(key)) activeParamKeys.value = [...activeParamKeys.value, key]
+}
 function useParameterDefault(param) {
   delete config.value[param.key]
 }
@@ -2284,7 +2440,7 @@ const searchTagResults = computed(() => {
   const active = new Set(activeParamKeys.value)
   const out = []
   for (const p of catalogParamList.value) {
-    if (active.has(p.key)) continue
+    if (active.has(p.key) || BASIC_PARAM_KEYS.includes(p.key)) continue
     if (paramMatchesSearch(p, q)) out.push(p)
     if (out.length >= 100) break
   }
@@ -2807,6 +2963,25 @@ function formatAxiosDetail(e) {
   return e?.message || 'Request failed'
 }
 
+async function saveSourceRepository() {
+  if (!model.value || !isLocalModel.value || sourceRepositoryBusy.value) return
+  sourceRepositoryBusy.value = true
+  sourceRepositoryError.value = ''
+  try {
+    const repo = String(sourceRepositoryDraft.value || '').trim()
+    await axios.put(modelApiUrl('/source'), { huggingface_repo: repo || null })
+    await modelStore.fetchModels()
+    const refreshed = findModelById(route.params.id)
+    if (refreshed) model.value = refreshed
+    sourceRepositoryDraft.value = refreshed?.source?.huggingface_repo || ''
+    toast.add({ severity: 'success', summary: 'Source repository saved', life: 3000 })
+  } catch (error) {
+    sourceRepositoryError.value = formatAxiosDetail(error)
+  } finally {
+    sourceRepositoryBusy.value = false
+  }
+}
+
 function findModelById(id) {
   const sid = String(id)
   for (const group of modelStore.models) {
@@ -2842,7 +3017,8 @@ function paramRegistryFlag(engineId, key) {
 
 async function fetchParamRegistry(engine, { draftFamily, draftTask, rescan = false } = {}) {
   try {
-    const family = draftFamily ?? (paramRegistryFlag(engine, 'family') ? config.value?.family : undefined)
+    const family =
+      draftFamily ?? (paramRegistryFlag(engine, 'family') ? config.value?.family : undefined)
     const task = draftTask ?? (paramRegistryFlag(engine, 'task') ? config.value?.task : undefined)
     const { data } = await axios.get('/api/models/param-registry', {
       params: {
@@ -2906,6 +3082,51 @@ async function fetchParamRegistry(engine, { draftFamily, draftTask, rescan = fal
   }
 }
 
+async function fetchEngineSetupDefaults(engine) {
+  const requestId = ++setupDefaultsRequestId
+  try {
+    const { data } = await axios.get(`/api/engine-setup-defaults/${encodeURIComponent(engine)}`, {
+      timeout: 1500,
+    })
+    if (requestId !== setupDefaultsRequestId || config.value.engine !== engine) return false
+    setupDefaultsValues.value =
+      data?.values && typeof data.values === 'object' && !Array.isArray(data.values)
+        ? { ...data.values }
+        : {}
+    setupDefaultsCatalog.value = data?.catalog || {}
+    return true
+  } catch {
+    if (requestId === setupDefaultsRequestId && config.value.engine === engine) {
+      setupDefaultsValues.value = {}
+      setupDefaultsCatalog.value = {}
+    }
+    return false
+  }
+}
+
+function seedEmptyEngineSectionFromSetupDefaults(engine) {
+  const current = config.value.engines?.[engine]
+  if (current && Object.keys(current).length) return false
+  const proposed = Object.fromEntries(
+    setupDefaultParams.value
+      .filter((param) => Object.prototype.hasOwnProperty.call(setupDefaultsValues.value, param.key))
+      .map((param) => [
+        param.key,
+        ['repeatable', 'space_list'].includes(param.value_kind)
+          ? Array.isArray(setupDefaultsValues.value[param.key])
+            ? [...setupDefaultsValues.value[param.key]]
+            : []
+          : isDelimitedEnumParam(param)
+            ? normalizeCsvEnumValue(setupDefaultsValues.value[param.key], param)
+            : setupDefaultsValues.value[param.key],
+      ]),
+  )
+  if (!Object.keys(proposed).length) return false
+  config.value.engines = { ...(config.value.engines || {}), [engine]: proposed }
+  seededSetupDefaultEngines.value = new Set([...seededSetupDefaultEngines.value, engine])
+  return true
+}
+
 function scheduleAudioRegistryRefresh() {
   if (audioRegistryRefreshTimer) clearTimeout(audioRegistryRefreshTimer)
   audioRegistryRefreshTimer = window.setTimeout(() => {
@@ -2945,8 +3166,8 @@ function buildEngineStashFromForm(sourceConfig = config.value) {
     // belonging to the other runtime and keys missing from an older CLI scan.
     for (const param of catalogParamList.value) delete stash[param.key]
     stash[runtimeKeyFor(sourceConfig.engine)] = normalizeSglangRuntime(
-    sourceConfig[runtimeKeyFor(sourceConfig.engine)],
-  )
+      sourceConfig[runtimeKeyFor(sourceConfig.engine)],
+    )
   }
   if (Array.isArray(sourceConfig.set_params_by_id)) {
     stash.set_params_by_id = JSON.parse(JSON.stringify(sourceConfig.set_params_by_id))
@@ -3257,9 +3478,12 @@ async function changeEngine(engine) {
   }
   paramSearchQuery.value = ''
   hideUnsupportedParams.value = false
-  await fetchParamRegistry(engine)
+  await Promise.all([fetchParamRegistry(engine), fetchEngineSetupDefaults(engine)])
+  if (config.value.engine !== engine) return
   const sec = (config.value.engines && config.value.engines[engine]) || {}
-  setActiveKeysFromSection(sec, catalogParamList.value)
+  seedEmptyEngineSectionFromSetupDefaults(engine)
+  const nextSection = (config.value.engines && config.value.engines[engine]) || sec
+  setActiveKeysFromSection(nextSection, catalogParamList.value)
   applyEngineSectionToForm(engine)
 }
 
@@ -3301,7 +3525,13 @@ function syncCompanionSelectionsFromModel() {
 
 async function loadCompanions() {
   if (!showCompanionsCard.value || !model.value?.id) {
-    companionFiles.value = { mmproj_files: [], mtp_files: [], dflash_files: [], dspark_files: [], engram_files: [] }
+    companionFiles.value = {
+      mmproj_files: [],
+      mtp_files: [],
+      dflash_files: [],
+      dspark_files: [],
+      engram_files: [],
+    }
     return
   }
   companionsLoading.value = true
@@ -3316,7 +3546,13 @@ async function loadCompanions() {
     }
     syncCompanionSelectionsFromModel()
   } catch (e) {
-    companionFiles.value = { mmproj_files: [], mtp_files: [], dflash_files: [], dspark_files: [], engram_files: [] }
+    companionFiles.value = {
+      mmproj_files: [],
+      mtp_files: [],
+      dflash_files: [],
+      dspark_files: [],
+      engram_files: [],
+    }
     toast.add({
       severity: 'warn',
       summary: 'Companions',
@@ -3475,6 +3711,8 @@ async function loadAll() {
       return
     }
     model.value = found
+    sourceRepositoryDraft.value = found.source?.huggingface_repo || ''
+    sourceRepositoryError.value = ''
     syncCompanionSelectionsFromModel()
 
     const cfgResp = await axios.get(modelApiUrl('/config'))
@@ -3493,13 +3731,15 @@ async function loadAll() {
 
     await Promise.all([
       fetchParamRegistry(engine),
+      fetchEngineSetupDefaults(engine),
       gpuListPromise,
       engineDescriptorsPromise,
       loadCompanions(),
       enginesStore.fetchRuntimePlan?.() ?? Promise.resolve(),
     ])
 
-    const sec = (merged.engines && merged.engines[engine]) || {}
+    seedEmptyEngineSectionFromSetupDefaults(engine)
+    const sec = (config.value.engines && config.value.engines[engine]) || {}
     setActiveKeysFromSection(sec, catalogParamList.value)
     applyEngineSectionToForm(engine)
     savedConfig.value = JSON.parse(JSON.stringify(config.value))
@@ -3662,6 +3902,7 @@ async function applyConfigTemplate(persist) {
     applyEngineSectionToForm(eng)
     if (persist) {
       savedConfig.value = JSON.parse(JSON.stringify(config.value))
+      seededSetupDefaultEngines.value = new Set()
       enginesStore.invalidateRuntimePlan()
       void enginesStore.fetchRuntimePlanState()
       void enginesStore.fetchRuntimePlan?.()
@@ -3791,6 +4032,7 @@ function applyLoadedConfig(data) {
   setActiveKeysFromSection(sec, catalogParamList.value)
   applyEngineSectionToForm(eng)
   savedConfig.value = JSON.parse(JSON.stringify(config.value))
+  seededSetupDefaultEngines.value = new Set()
   clearDraft(route.params.id, config.value.engine)
   draftOffer.value = null
 }

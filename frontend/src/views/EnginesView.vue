@@ -42,6 +42,10 @@
       <Transition name="ev-collapse">
         <div v-if="enginesExpanded" id="ev-section-engines-body" class="ev-section-body">
           <div class="engine-filters">
+            <label class="engine-filters__hidden-toggle">
+              <input type="checkbox" v-model="showHiddenEngines" />
+              Show hidden
+            </label>
             <label for="engine-task-filter"
               >Task
               <select id="engine-task-filter" v-model="engineTaskFilter">
@@ -64,11 +68,13 @@
             </button>
           </div>
           <div class="engine-grid">
-            <EngineCard
+            <div
               v-for="card in engineSummaryCards"
               :key="card.id"
               :style="{ order: presentation(card.id).order }"
-              v-show="presentation(card.id).visible"
+              v-show="presentation(card.id).visible && (showHiddenEngines || !hiddenEngineIds.has(card.id))"
+            >
+              <EngineCard
               :disabled="card.disabled"
               v-tooltip.top="card.tooltip"
               @open="card.disabled ? undefined : openEngineModal(card.id)"
@@ -108,15 +114,51 @@
               </div>
               <div v-else class="engine-card-status">{{ card.subtitle }}</div>
             </EngineCard>
+            <button type="button" class="engine-card-visibility" @click="toggleEngineVisibility(card.id)">
+              {{ hiddenEngineIds.has(card.id) ? 'Show engine' : 'Hide engine' }}
+            </button>
+            </div>
 
             <!-- YAML campaign S6: dynamic cards for SERVER-BACKED
                  (YAML-onboarded) engines — payload-driven, zero view edits
                  to onboard an engine, no entries in the client registry. -->
-            <GenericEnginePanel
+            <div
               v-for="descriptor in serverBackedEngineDescriptors"
               :key="descriptor.id"
-              :descriptor="descriptor"
-            />
+              v-show="showHiddenEngines || !hiddenEngineIds.has(descriptor.id)"
+            >
+              <GenericEnginePanel :descriptor="descriptor" />
+              <button type="button" class="engine-card-visibility" @click="toggleEngineVisibility(descriptor.id)">
+                {{ hiddenEngineIds.has(descriptor.id) ? 'Show engine' : 'Hide engine' }}
+              </button>
+            </div>
+            <div
+              v-for="descriptor in descriptorFallbackEngines"
+              :key="descriptor.id"
+              v-show="showHiddenEngines || !hiddenEngineIds.has(descriptor.id)"
+              class="descriptor-fallback"
+            >
+              <article class="engine-card descriptor-fallback__card">
+                <div class="engine-card-head">
+                  <div class="engine-card-title">
+                    <div>
+                      <div class="engine-card-name">{{ descriptor.label || descriptor.id }}</div>
+                      <div class="engine-card-meta">
+                        {{ Number(descriptor.installed_versions) || 0 }} installed version{{ Number(descriptor.installed_versions) === 1 ? '' : 's' }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="engine-card-body">
+                  <div class="engine-card-status">{{ descriptor.active_version ? `Active: ${descriptor.active_version}` : descriptor.runnable ? 'Ready to run' : 'Not currently runnable' }}</div>
+                  <p class="descriptor-fallback__note">Register this engine with the external manager; start its models in Studio.</p>
+                </div>
+                <span class="engine-card-cta">Managed externally</span>
+              </article>
+              <button type="button" class="engine-card-visibility" @click="toggleEngineVisibility(descriptor.id)">
+                {{ hiddenEngineIds.has(descriptor.id) ? 'Show engine' : 'Hide engine' }}
+              </button>
+            </div>
           </div>
         </div>
       </Transition>
@@ -1005,6 +1047,12 @@ const serverBackedEngineDescriptors = computed(() =>
     (descriptor) => !Object.hasOwn(ENGINE_DESCRIPTORS, descriptor.id),
   ),
 )
+// Show server-described engines even when they have no generic lifecycle.
+const descriptorFallbackEngines = computed(() =>
+  (enginesStore.engineDescriptors || []).filter((descriptor) =>
+    descriptor && !Object.hasOwn(ENGINE_DESCRIPTORS, descriptor.id) && descriptor.generic_lifecycle !== true,
+  ),
+)
 const toast = useToast()
 const documentSaveNotice = ref(null)
 const documentSaveHeld = computed(() => saveHeldForRefresh(documentSaveNotice.value))
@@ -1252,6 +1300,26 @@ const activeAudioCpp = computed(
 )
 const engineTaskFilter = ref('all')
 const engineHardwareFilter = ref('all')
+const ENGINE_VISIBILITY_KEY = 'llama-studio.engines.hidden'
+const hiddenEngineIds = ref(new Set())
+const showHiddenEngines = ref(false)
+try {
+  const storedHiddenEngines = JSON.parse(localStorage.getItem(ENGINE_VISIBILITY_KEY) || '[]')
+  if (Array.isArray(storedHiddenEngines)) hiddenEngineIds.value = new Set(storedHiddenEngines.filter((id) => typeof id === 'string'))
+} catch {
+  // Ignore malformed or unavailable browser storage; cards remain visible.
+}
+function toggleEngineVisibility(engineId) {
+  const next = new Set(hiddenEngineIds.value)
+  if (next.has(engineId)) next.delete(engineId)
+  else next.add(engineId)
+  hiddenEngineIds.value = next
+  try {
+    localStorage.setItem(ENGINE_VISIBILITY_KEY, JSON.stringify([...next]))
+  } catch {
+    // The current view still updates if browser storage is unavailable.
+  }
+}
 useQueryState({
   task: {
     get: () => engineTaskFilter.value,
@@ -4176,6 +4244,16 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
   gap: 0.85rem;
+}
+
+.engine-card-visibility {
+  justify-self: start;
+  color: var(--text-color-secondary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.25rem 0.5rem;
 }
 
 :deep(.engine-card) {
