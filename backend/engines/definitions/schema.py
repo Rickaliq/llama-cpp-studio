@@ -38,6 +38,8 @@ from typing import Any, Dict, FrozenSet, List, Mapping, Sequence, Tuple
 import yaml
 
 from backend.engines.spec import EngineSpec
+from backend.engines.definitions.primitive_vocabulary import INSTALL_PRIMITIVES
+from backend.engines.definitions.schema_build_options import validate_build_options
 
 SCHEMA_VERSION = 1
 SUPPORTED_SCHEMA_VERSIONS = frozenset({1, 2})
@@ -436,174 +438,8 @@ def _validate_launch_policy(value: Any, where: str) -> Tuple[Tuple[str, Any], ..
     return tuple((key, normalized[key]) for key in sorted(normalized))
 
 
-_BUILD_OPTION_KINDS = frozenset({"bool", "str", "enum", "int"})
-_BUILD_OPTION_KEYS = frozenset(
-    {
-        "key",
-        "field",
-        "kind",
-        "default",
-        "label",
-        "desc",
-        "category",
-        "cmake",
-        "requires",
-        "enum_values",
-        "special",
-        # R94: which engines of a shared family expose this entry in the UI.
-        "engines",
-    }
-)
-_BUILD_CATEGORY_KEYS = frozenset({"id", "label", "collapsed", "requires", "engines"})
-_BUILD_REQUIRES_PSEUDO = frozenset({"model_set_custom", "cuda_or_hip"})
-
-
-def _validate_build_options(value: Any, where: str) -> Tuple[Tuple[str, Any], ...]:
-    """Static build-option catalog: types, defaults, categories, references."""
-    _require(isinstance(value, Mapping), "build_options must be a mapping", where)
-    unknown = set(value) - {
-        "build_types",
-        "build_type_default",
-        "primary_keys",
-        "categories",
-        "options",
-    }
-    _require(not unknown, f"build_options has unknown keys {sorted(unknown)}", where)
-
-    build_types = value.get("build_types")
-    _require(
-        isinstance(build_types, Sequence)
-        and not isinstance(build_types, (str, bytes))
-        and bool(build_types),
-        "build_options.build_types must be a non-empty list",
-        where,
-    )
-    for item in build_types:
-        _check_str("build_options.build_types item", item, where)
-    build_type_default = value.get("build_type_default")
-    _require(
-        isinstance(build_type_default, str) and build_type_default in build_types,
-        "build_options.build_type_default must be one of build_types",
-        where,
-    )
-
-    primary_keys = value.get("primary_keys") or []
-    _require(
-        isinstance(primary_keys, Sequence) and not isinstance(primary_keys, (str, bytes)),
-        "build_options.primary_keys must be a list",
-        where,
-    )
-    for item in primary_keys:
-        _check_str("build_options.primary_keys item", item, where)
-
-    categories = value.get("categories")
-    _require(
-        isinstance(categories, Sequence)
-        and not isinstance(categories, (str, bytes))
-        and bool(categories),
-        "build_options.categories must be a non-empty list",
-        where,
-    )
-    category_ids: List[str] = []
-    for index, category in enumerate(categories):
-        cwhere = f"{where}.build_options.categories[{index}]"
-        _require(isinstance(category, Mapping), "category must be a mapping", cwhere)
-        unknown = set(category) - _BUILD_CATEGORY_KEYS
-        _require(not unknown, f"category has unknown keys {sorted(unknown)}", cwhere)
-        category_id = _check_str("id", category.get("id"), cwhere)
-        _require(bool(_TOKEN_RE.match(category_id)), f"invalid category id {category_id!r}", cwhere)
-        _check_str("label", category.get("label"), cwhere)
-        if "collapsed" in category:
-            _check_bool("collapsed", category["collapsed"], cwhere)
-        if "requires" in category:
-            _check_str("requires", category["requires"], cwhere)
-        if "engines" in category:
-            _check_token_list("engines", category["engines"], cwhere)
-        category_ids.append(category_id)
-    _require(
-        len(set(category_ids)) == len(category_ids),
-        "duplicate build-option category id",
-        where,
-    )
-
-    options = value.get("options")
-    _require(
-        isinstance(options, Sequence) and not isinstance(options, (str, bytes)) and bool(options),
-        "build_options.options must be a non-empty list",
-        where,
-    )
-    seen_keys: List[str] = []
-    seen_fields: List[str] = []
-    for index, option in enumerate(options):
-        owhere = f"{where}.build_options.options[{index}]"
-        _require(isinstance(option, Mapping), "option must be a mapping", owhere)
-        unknown = set(option) - _BUILD_OPTION_KEYS
-        _require(not unknown, f"option has unknown keys {sorted(unknown)}", owhere)
-        key = _check_str("key", option.get("key"), owhere)
-        field = _check_str("field", option.get("field"), owhere)
-        for token in (key, field):
-            _require(bool(_TOKEN_RE.match(token)), f"invalid build-option token {token!r}", owhere)
-        _require(key not in seen_keys, f"duplicate build-option key {key!r}", owhere)
-        _require(field not in seen_fields, f"duplicate build-option field {field!r}", owhere)
-        seen_keys.append(key)
-        seen_fields.append(field)
-        kind = _check_kind("kind", option.get("kind"), _BUILD_OPTION_KINDS, owhere)
-        _check_str("label", option.get("label"), owhere)
-        _check_str("desc", option.get("desc"), owhere)
-        category = _check_str("category", option.get("category"), owhere)
-        _require(category in category_ids, f"unknown build-option category {category!r}", owhere)
-        default = option.get("default")
-        if kind == "bool":
-            _check_bool("default", default, owhere)
-        elif kind == "int":
-            _require(
-                isinstance(default, int) and not isinstance(default, bool),
-                "default must be an integer",
-                owhere,
-            )
-            _require(default >= 0, "default must be non-negative", owhere)
-        else:
-            # String defaults may be empty (e.g. a free-text CMake-args field).
-            _require(isinstance(default, str), "default must be a string", owhere)
-        for key_name in ("cmake", "requires", "special"):
-            if key_name in option:
-                _check_str(key_name, option[key_name], owhere)
-        if "engines" in option:
-            _check_token_list("engines", option["engines"], owhere)
-        if kind == "enum":
-            enum_values = option.get("enum_values")
-            _require(
-                isinstance(enum_values, Sequence)
-                and not isinstance(enum_values, (str, bytes))
-                and bool(enum_values),
-                "enum option requires a non-empty enum_values list",
-                owhere,
-            )
-            for item in enum_values:
-                _check_str("enum_values item", item, owhere)
-            _require(default in enum_values, "default must be one of enum_values", owhere)
-        elif "enum_values" in option:
-            _require(False, "enum_values is only allowed for kind 'enum'", owhere)
-
-    for index, category in enumerate(categories):
-        requires = category.get("requires")
-        if requires:
-            _require(
-                requires in seen_keys,
-                f"category requires unknown build-option {requires!r}",
-                f"{where}.build_options.categories[{index}]",
-            )
-    for index, option in enumerate(options):
-        requires = option.get("requires")
-        if requires:
-            _require(
-                requires in seen_keys or requires in _BUILD_REQUIRES_PSEUDO,
-                f"option requires unknown build-option {requires!r}",
-                f"{where}.build_options.options[{index}]",
-            )
-    return tuple((key, value[key]) for key in sorted(value))
-
-
+# Build-option catalog validation lives in its own module: the catalog is one
+# cohesive unit and this module is size-budgeted (scripts/module-size-budgets.json).
 _PROTOCOL_PROBE_KEYS = frozenset(
     {
         "model_flag",
@@ -763,7 +599,7 @@ def _validate_request_defaults(value: Any, where: str) -> Tuple[Tuple[str, Any],
 # adapter map, and proxy runtime kinds) without this module importing them.
 INSTALL_KINDS: FrozenSet[str] = frozenset({"cmake", "prebuilt", "python_venv"})
 RUNTIME_KINDS: FrozenSet[str] = frozenset(
-    {"llama_server", "lmdeploy", "onecat_vllm", "vllm", "sglang", "audio_cpp", "moe4all", "strata", "koboldcpp"}
+    {"llama_server", "lmdeploy", "onecat_vllm", "vllm", "sglang", "audio_cpp", "koboldcpp", "moe4all", "strata"}
 )
 SCANNER_KINDS: FrozenSet[str] = frozenset(
     {
@@ -773,9 +609,9 @@ SCANNER_KINDS: FrozenSet[str] = frozenset(
         "sglang_help",
         "sglang_diffusion_help",
         "audio_cpp",
-        "infr_help",
         "koboldcpp_help",
         "maya_ik2_help",
+        "infr_help",
         "strata_profile",
     }
 )
@@ -810,6 +646,7 @@ PROFILE_KEYS: FrozenSet[str] = frozenset(
         "launch_family",
         "launch_args",
         "upstream_model_name",
+        "upstream_model_name",
     }
 )
 # A profile may NAME the launch mechanism that composes it (family profile)
@@ -831,6 +668,10 @@ FAMILY_PROFILE_KEYS: FrozenSet[str] = frozenset(
         "port_binding",
         "launch_args",
         "upstream_model_name",
+        # The family composes executable/cwd/argv, but a managed cache tree is
+        # still Studio data anchored to the install row. A family profile may
+        # declare ONLY `env.caches`; cwd/cuda/required belong to the mechanism.
+        "env",
     }
 )
 LAUNCH_ARG_KEYS: FrozenSet[str] = frozenset(
@@ -855,61 +696,9 @@ RECIPE_STEP_KEYS: FrozenSet[str] = frozenset(
 # "install primitives must be shared and typed, not arbitrary shell").
 # Recipes may only reference these names; raw argv is expressible solely via
 # a step's ``run`` for genuinely host-level one-offs, never inside engines.
-INSTALL_PRIMITIVES: FrozenSet[str] = frozenset(
-    {
-        "host.inspect",
-        "prereqs.resolve_version",
-        "prereqs.resolve_release_assets",
-        "artifact.resolve_candidates",
-        "archive.download_extract",
-        "vcs.clone",
-        "vcs.sync",
-        "vcs.checkout",
-        "vcs.apply_patch",
-        "vcs.capture_identity",
-        "vcs.workspace_checkout",
-        "vcs.seal_checkout",
-        "vcs.capture_commit",
-        "vcs.prepare_build",
-        # Reusable fork mechanisms: versioned, applicability-checked file
-        # transforms and a declared builder environment.
-        "vcs.apply_transform",
-        "build.prepare_fork",
-        "venv.create",
-        "env.compose",
-        "env.compose_ccache",
-        "exec.run_logged",
-        "toolchain.ensure",
-        "artifact.build_wheels",
-        "artifact.locate",
-        "artifact.remove_bundle",
-        "artifact.read_checksum",
-        "archive.download",
-        "archive.verify_sha256",
-        "archive.verify_checksums_file",
-        "archive.extract_tar",
-        "artifact.materialize_cli",
-        "cgroup.select_concurrency",
-        "pip.install_requirements",
-        "pip.install_package",
-        "pip.uninstall",
-        "pip.build_wheel",
-        "pip.install_wheels",
-        "pip.capture_metadata",
-        "fs.remove_tree",
-        "fs.remove_file",
-        "fs.assert_dir",
-        "fs.ensure_dir",
-        "fs.prune_files",
-        "cmake.configure",
-        "cmake.build",
-        "smoke.test",
-        "publish.install",
-        "publish.record_update",
-        "publish.forget",
-        "publish.finalize",
-    }
-)
+# The vocabulary lives in primitive_vocabulary.py (extracted to keep this
+# module within its size budget); the top-level import re-exports it for
+# existing ``from ...schema import INSTALL_PRIMITIVES`` callers.
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
@@ -1630,10 +1419,6 @@ def _validate_profile(name: str, value: Any, where: str) -> Dict[str, Any]:
         family = _check_kind(
             "launch_family", value.get("launch_family"), LAUNCH_FAMILIES, item_where
         )
-        if "upstream_model_name" in value:
-            _check_kind(
-                "upstream_model_name", value.get("upstream_model_name"), {"stable_id", "model_stem"}, item_where
-            )
         disallowed = set(value) - FAMILY_PROFILE_KEYS
         _require(
             not disallowed,
@@ -1712,6 +1497,17 @@ def _validate_profile(name: str, value: Any, where: str) -> Dict[str, Any]:
             "caches",
         }
         _require(not unknown, f"env has unknown keys {sorted(unknown)}", item_where)
+        if "launch_family" in value:
+            # The family mechanism composes cwd/CUDA/required/path itself;
+            # only the Studio-owned managed cache declarations belong here.
+            disallowed_env = set(env) - {"caches"}
+            _require(
+                not disallowed_env,
+                f"profile {name!r} declaring launch_family cannot also "
+                f"declare env {sorted(disallowed_env)}: the family mechanism "
+                "composes those",
+                item_where,
+            )
         if "caches" in env:
             # Managed JIT/kernel caches resolved to <install_dir>/caches/<var>.
             # The variable NAMES are data; Studio owns the path and the flush.
@@ -2224,7 +2020,7 @@ class EngineDefinition:
             if name not in profiles:
                 raise DefinitionError(f"{self.id}: no runtime profile {name!r}")
             return profiles[name]
-        for candidate, spec in profiles.items():
+        for _candidate, spec in profiles.items():
             if spec.get("default"):
                 return spec
         if len(profiles) == 1:
@@ -2430,7 +2226,7 @@ def validate_definition(raw: Any, *, source: str) -> EngineDefinition:
             launch_policy=_validate_launch_policy(raw["launch_policy"], where)
             if raw.get("launch_policy") is not None
             else (),
-            build_options=_validate_build_options(raw["build_options"], where)
+            build_options=validate_build_options(raw["build_options"], where)
             if raw.get("build_options") is not None
             else (),
             protocol=_validate_protocol(raw["protocol"], where)
