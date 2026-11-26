@@ -13,13 +13,6 @@
       </template>
       <template #actions>
         <Button
-          label="Import local GGUF"
-          icon="pi pi-folder-open"
-          severity="secondary"
-          outlined
-          @click="showLocalImport = true"
-        />
-        <Button
           icon="pi pi-refresh"
           text
           severity="secondary"
@@ -38,130 +31,89 @@
     </PageHeader>
 
     <!-- Token Warning -->
-    <div v-if="showTokenWarning" class="token-warning">
-      <i class="pi pi-key" aria-hidden="true" />
-      <span class="token-warning__text">A Hugging Face token is required for gated models.</span>
-      <Button
-        label="Set Token"
-        icon="pi pi-pencil"
-        size="small"
-        text
-        class="token-warning__action"
-        @click="showTokenDialog = true"
-      />
-    </div>
+    <HuggingFaceTokenNotice v-if="showTokenWarning" @open="showTokenDialog = true" />
 
     <SetupChecklist />
 
-    <div v-if="modelStore.modelsStale" class="state-banner" role="status">
-      <span>Showing the last loaded library. The latest refresh failed.</span>
-      <Button label="Retry" size="small" @click="retryCatalogs" />
-    </div>
+    <StateBanner
+      v-if="modelStore.modelsStale"
+      severity="warning"
+      message="Showing the last loaded library. The latest refresh failed."
+    >
+      <template #actions>
+        <Button label="Retry" size="small" @click="retryCatalogs" />
+      </template>
+    </StateBanner>
 
-    <div v-else-if="runtimeOutage" class="state-banner" role="status">
-      <span>{{ runtimeOutage }}</span>
-      <Button label="Retry" size="small" @click="retryCatalogs" />
-    </div>
+    <StateBanner v-else-if="runtimeOutage" severity="warning" :message="runtimeOutage">
+      <template #actions>
+        <Button label="Retry" size="small" @click="retryCatalogs" />
+      </template>
+    </StateBanner>
 
     <LoadingState v-if="catalogLoading && !storeHasModels" message="Loading models…" />
 
     <EmptyState
       v-else-if="catalogFailed && !storeHasModels"
       icon="pi pi-exclamation-circle"
+      role="alert"
       title="Could not load models"
       :description="modelStore.modelsError || 'The model library request failed.'"
     >
       <Button label="Retry" icon="pi pi-refresh" @click="retryCatalogs" />
+      <RouterLink class="page-action-link" to="/search">Search models</RouterLink>
     </EmptyState>
 
-    <EmptyState
-      v-else-if="!catalogLoading && !storeHasModels"
-      icon="pi pi-inbox"
-      title="No models downloaded yet"
-      description="Install a compatible engine, then search for a model."
-    >
-      <Button label="Search models" icon="pi pi-search" @click="$router.push('/search')" />
-      <Button
-        label="Engines"
-        icon="pi pi-cog"
-        severity="secondary"
-        outlined
-        @click="$router.push('/engines')"
+    <FirstModelPanel v-else-if="!catalogLoading && !storeHasModels" />
+
+    <PageSection v-else variant="plain" class="library-workspace">
+      <LibraryToolbar
+        v-model:query="libraryQuery"
+        v-model:status-filter="statusFilter"
+        v-model:engine-filter="engineFilter"
+        v-model:task-filter="taskFilter"
+        v-model:sort-by="sortBy"
+        v-model:filters-open="filtersOpen"
+        :view-mode="viewMode"
+        :secondary-filter-count="secondaryFilterCount"
+        :engine-options="engineOptions"
+        :task-options="taskOptions"
+        :preset-filters="libraryPresetFilters"
+        @apply-preset="applyLibraryPreset"
+        @change-view="setViewMode"
       />
-    </EmptyState>
 
-    <div v-else class="library-workspace">
-      <div class="library-toolbar">
-        <label class="sr-only" for="library-search">Search library</label>
-        <input
-          id="library-search"
-          v-model="libraryQuery"
-          type="search"
-          class="library-search"
-          placeholder="Search name or repository"
-        />
-        <div class="library-filter">
-          <label for="library-status">Status</label>
-          <select id="library-status" v-model="statusFilter">
-            <option value="all">All</option>
-            <option value="running">Running</option>
-            <option value="stopped">Stopped</option>
-            <option value="attention">Needs attention</option>
-          </select>
-        </div>
-        <button
-          class="library-filters-toggle"
-          type="button"
-          :aria-expanded="filtersOpen"
-          aria-controls="library-secondary-filters"
-          @click="filtersOpen = !filtersOpen"
-        >
-          Filters<span v-if="secondaryFilterCount"> ({{ secondaryFilterCount }})</span>
-        </button>
-        <div id="library-secondary-filters" class="library-secondary-filters" v-show="filtersOpen">
-          <div class="library-filter">
-            <label for="library-engine">Engine</label>
-            <select id="library-engine" v-model="engineFilter">
-              <option value="all">Any engine</option>
-              <option v-for="engine in engineChoices" :key="engine" :value="engine">
-                {{ prettyEngine(engine) }}
-              </option>
-            </select>
-          </div>
-          <div class="library-filter">
-            <label for="library-task">Task</label>
-            <select id="library-task" v-model="taskFilter">
-              <option value="all">Any task</option>
-              <option v-for="task in taskChoices" :key="task" :value="taskLabel(task)">
-                {{ taskLabel(task) }}
-              </option>
-            </select>
-          </div>
-          <div class="library-filter">
-            <label for="library-sort">Sort</label>
-            <select id="library-sort" v-model="sortBy">
-              <option value="name">Name</option>
-              <option value="size">Size</option>
-              <option value="recent">Recent use</option>
-            </select>
-          </div>
-        </div>
-        <div class="library-view" role="group" aria-label="Library layout">
-          <button type="button" :aria-pressed="viewMode === 'cards'" @click="setViewMode('cards')">
-            Cards
-          </button>
-          <button type="button" :aria-pressed="viewMode === 'list'" @click="setViewMode('list')">
-            List
-          </button>
-        </div>
-      </div>
-
-      <div class="library-results-summary" role="status">
-        <span>{{ visibleModelCount }} of {{ totalModels }} models</span>
-        <button v-if="hasLibraryFilters" type="button" @click="clearLibraryFilters">
-          Clear filters
-        </button>
-      </div>
+      <PageToolbar plain label="Library selection" class="library-results-summary">
+        <template #summary>
+          <span role="status">{{ visibleModelCount }} of {{ totalModels }} models</span>
+          <label class="library-select-all">
+            <input
+              type="checkbox"
+              :checked="selectionSummary.all"
+              :indeterminate="selectionSummary.some"
+              :disabled="!selectableQuantIds.length"
+              aria-label="Select all visible models"
+              @change="toggleSelectAll"
+            />
+            Select all visible
+          </label>
+          <Button
+            v-if="hasLibraryFilters"
+            label="Clear filters"
+            size="small"
+            text
+            severity="secondary"
+            @click="clearLibraryFilters"
+          />
+        </template>
+      </PageToolbar>
+      <LibraryBulkActions
+        :models="selectedModels"
+        :busy-ids="transitionIds"
+        @complete="onBulkComplete"
+        @clear="clearSelection"
+      />
+      <LibraryTransitionStatus :entries="transitionEntries" />
       <div v-if="hasLibraryFilters" class="search-chips" aria-label="Active library filters">
         <button v-if="libraryQuery" type="button" class="search-chip" @click="libraryQuery = ''">
           Name: {{ libraryQuery }} ×
@@ -196,116 +148,28 @@
         icon="pi pi-filter"
         title="No models match"
         description="Try a different name, status, engine, or task."
-        ><Button label="Clear filters" severity="secondary" outlined @click="clearLibraryFilters"
-      /></EmptyState>
+      >
+        <Button label="Clear filters" severity="secondary" outlined @click="clearLibraryFilters" />
+      </EmptyState>
 
       <!-- Model groups (GGUF + Safetensors) -->
-      <div
+      <LibraryListView
         v-else-if="viewMode === 'list'"
-        class="library-list"
-        role="table"
-        aria-label="Model library"
-      >
-        <div class="library-list__head" role="row">
-          <span role="columnheader">Model</span>
-          <span role="columnheader">Status</span>
-          <span role="columnheader" class="library-list__size-heading">File size</span>
-          <span role="columnheader" class="library-list__actions-heading">Actions</span>
-        </div>
-        <div
-          v-for="line in libraryLines"
-          :key="line.key"
-          class="library-list__row"
-          :class="{
-            'library-list__row--variant': line.kind === 'variant',
-            'is-running': line.running,
-          }"
-          role="row"
-        >
-          <div class="library-list__model" role="cell">
-            <div class="library-list__title">
-              <span class="library-list__name" :title="line.title">{{ line.title }}</span>
-            </div>
-            <div v-if="line.meta" class="library-list__meta">{{ line.meta }}</div>
-          </div>
-          <div class="library-list__state" role="cell">
-            <span v-if="line.status" class="library-list__status" :data-status="line.statusKey">{{
-              line.status
-            }}</span>
-            <span v-else class="library-list__status library-list__status--quiet">{{
-              line.kind === 'group' ? 'Variants' : 'Stopped'
-            }}</span>
-          </div>
-          <div class="library-list__size" role="cell">
-            <span>{{ line.size || '—' }}</span
-            ><small v-if="line.kind === 'group'">Total on disk</small>
-          </div>
-          <div class="library-list__actions" role="cell">
-            <template v-if="line.quant">
-              <ModelStartStopButton
-                :name="line.title"
-                show-label
-                :is-active="line.quant.is_active"
-                :is-proxy-loading="quantStatus(line.quant) === 'loading'"
-                :is-starting="isQuantStarting(line.quant)"
-                :is-stopping="isQuantStopping(line.quant)"
-                @start="startModel(line.quant.id)"
-                @stop="stopModel(line.quant.id)"
-              />
-
-              <Button
-                v-if="modelRuntimeState(line.quant).actionable && !isAudioQuant(line.quant)"
-                icon="pi pi-link"
-                text
-                size="small"
-                severity="secondary"
-                v-tooltip.top="'Connect'"
-                label="Connect"
-                :aria-label="`Connect ${line.title}`"
-                @click="openConnect(line.quant)"
-              />
-              <Button
-                v-if="isAudioQuant(line.quant)"
-                icon="pi pi-volume-up"
-                text
-                size="small"
-                severity="secondary"
-                v-tooltip.top="'Audio'"
-                :aria-label="`Open audio for ${line.title}`"
-                @click="openAudio(line.quant.id)"
-              />
-              <Button
-                icon="pi pi-cog"
-                text
-                size="small"
-                severity="secondary"
-                v-tooltip.top="'Configure'"
-                :aria-label="`Configure ${line.title}`"
-                @click="configureModel(line.quant.id)"
-              />
-              <details class="row-menu">
-                <summary class="library-list__more" :aria-label="`More actions for ${line.title}`">
-                  <i class="pi pi-ellipsis-v" aria-hidden="true" />
-                </summary>
-                <div class="library-list__menu-items">
-                  <ModelWarmupButton
-                    :model="line.quant"
-                    :disabled="isQuantStarting(line.quant) || isQuantStopping(line.quant)"
-                  />
-                  <button type="button" @click="confirmDeleteModel(line.quant.id)">Delete</button>
-                </div>
-              </details>
-            </template>
-            <details v-else class="row-menu">
-              <summary class="library-list__more" :aria-label="`More actions for ${line.title}`">
-                <i class="pi pi-ellipsis-v" aria-hidden="true" />
-              </summary>
-              <button type="button" @click="confirmDeleteGroup(line.groupId)">Delete group</button>
-            </details>
-          </div>
-        </div>
-      </div>
-      <div v-else class="model-groups">
+        :lines="libraryLines"
+        :is-selected="isSelected"
+        :is-starting="isQuantStarting"
+        :is-stopping="isQuantStopping"
+        @toggle-selection="toggleSelection"
+        @start="startModel"
+        @stop="stopModel"
+        @configure="configureModel"
+        @audio="openAudio"
+        @connect="openConnect"
+        @refresh="refreshModelStatus"
+        @delete="confirmDeleteModel"
+        @delete-group="confirmDeleteGroup"
+      />
+      <div v-else class="page-card-grid model-groups">
         <div
           v-for="group in displayGroups"
           :key="group.huggingface_id"
@@ -342,12 +206,14 @@
                     class="file-size file-size--total"
                     title="Total size (all quantizations)"
                   >
-                    {{ formatBytes(groupTotalFileSize(group)) }}
+                    {{ formatLibraryBytes(groupTotalFileSize(group)) }}
                   </span>
                   <Tag
-                    :value="groupRuntimeState(group).label"
-                    :severity="groupRuntimeState(group).severity"
+                    :value="groupDisplayState(group).label"
+                    :severity="groupDisplayState(group).severity"
+                    :title="groupDisplayState(group).detail"
                     class="running-badge"
+                    role="status"
                   />
                 </span>
                 <span class="group-tags">
@@ -373,16 +239,6 @@
               </span>
             </button>
             <div class="group-meta">
-              <a
-                v-if="huggingFaceSourceUrl({ ...primaryQuant(group), source: primaryQuant(group)?.source || group.source, huggingface_id: group.huggingface_id })"
-                :href="huggingFaceSourceUrl({ ...primaryQuant(group), source: primaryQuant(group)?.source || group.source, huggingface_id: group.huggingface_id })"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="hf-link"
-                @click.stop
-              >
-                <i class="pi pi-external-link" aria-hidden="true" /> Hugging Face source
-              </a>
               <span
                 v-if="group.quantizations?.length"
                 class="group-delete-preview"
@@ -405,6 +261,14 @@
           <div v-else class="group-header safetensors-header">
             <div class="group-title">
               <div class="group-heading">
+                <label v-if="primaryQuant(group)" class="library-check">
+                  <input
+                    type="checkbox"
+                    :checked="isSelected(primaryQuant(group).id)"
+                    :aria-label="`Select ${groupTitle(group)}`"
+                    @change="toggleSelection(primaryQuant(group).id)"
+                  />
+                </label>
                 <span class="group-name">{{ groupTitle(group) }}</span>
                 <span
                   v-if="group.huggingface_id && groupTitle(group) !== group.huggingface_id"
@@ -412,12 +276,14 @@
                   >{{ group.huggingface_id }}</span
                 >
                 <span v-if="primaryQuant(group) && primaryQuant(group).file_size" class="file-size">
-                  {{ formatBytes(primaryQuant(group).file_size) }}
+                  {{ formatLibraryBytes(primaryQuant(group).file_size) }}
                 </span>
                 <Tag
-                  :value="groupRuntimeState(group).label"
-                  :severity="groupRuntimeState(group).severity"
+                  :value="groupDisplayState(group).label"
+                  :severity="groupDisplayState(group).severity"
+                  :title="groupDisplayState(group).detail"
                   class="running-badge"
+                  role="status"
                 />
               </div>
               <div class="group-tags">
@@ -448,87 +314,28 @@
               </div>
             </div>
             <div class="group-meta">
-              <a
-                v-if="huggingFaceSourceUrl({ ...primaryQuant(group), source: primaryQuant(group)?.source || group.source, huggingface_id: group.huggingface_id })"
-                :href="huggingFaceSourceUrl({ ...primaryQuant(group), source: primaryQuant(group)?.source || group.source, huggingface_id: group.huggingface_id })"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="hf-link"
-                @click.stop
-              >
-                <i class="pi pi-external-link" aria-hidden="true" /> Hugging Face source
-              </a>
-              <ModelStartStopButton
+              <ModelCardActions
                 v-if="primaryQuant(group)"
+                :model="primaryQuant(group)"
                 :name="groupTitle(group)"
-                show-label
-                :is-active="primaryQuant(group).is_active"
-                :is-proxy-loading="quantStatus(primaryQuant(group)) === 'loading'"
-                :is-starting="primaryQuant(group) && isQuantStarting(primaryQuant(group))"
-                :is-stopping="primaryQuant(group) && isQuantStopping(primaryQuant(group))"
+                :is-starting="isQuantStarting(primaryQuant(group))"
+                :is-stopping="isQuantStopping(primaryQuant(group))"
                 stop-propagation
-                @start="primaryQuant(group) && startModel(primaryQuant(group).id)"
-                @stop="primaryQuant(group) && stopModel(primaryQuant(group).id)"
+                @start="startModel(primaryQuant(group).id)"
+                @stop="stopModel(primaryQuant(group).id)"
+                @configure="configureModel(primaryQuant(group).id)"
+                @audio="openAudio(primaryQuant(group).id)"
+                @connect="openConnect(primaryQuant(group))"
+                @refresh="refreshModelStatus"
+                @delete="confirmDeleteModel(primaryQuant(group).id)"
               />
-              <Button
-                v-if="primaryQuant(group) && isAudioQuant(primaryQuant(group))"
-                icon="pi pi-volume-up"
-                label="Open Audio"
-                severity="secondary"
-                size="small"
-                :aria-label="`Open audio for ${groupTitle(group)}`"
-                v-tooltip.top="'Audio'"
-                @click.stop="openAudio(primaryQuant(group).id)"
-              />
-              <Button
-                v-if="
-                  primaryQuant(group) &&
-                  modelRuntimeState(primaryQuant(group)).actionable &&
-                  !isAudioQuant(primaryQuant(group))
-                "
-                label="Connect"
-                icon="pi pi-link"
-                size="small"
-                :aria-label="`Connect ${groupTitle(group)}`"
-                @click.stop="openConnect(primaryQuant(group))"
-              />
-              <Button
-                v-if="primaryQuant(group)"
-                label="Configure"
-                icon="pi pi-cog"
-                text
-                severity="secondary"
-                size="small"
-                :aria-label="`Configure ${groupTitle(group)}`"
-                @click.stop="configureModel(primaryQuant(group).id)"
-              />
-              <details class="row-menu" @click.stop>
-                <summary :aria-label="`More actions for ${groupTitle(group)}`">More</summary>
-                <ModelWarmupButton
-                  v-if="primaryQuant(group)"
-                  :model="primaryQuant(group)"
-                  :disabled="
-                    isQuantStarting(primaryQuant(group)) || isQuantStopping(primaryQuant(group))
-                  "
-                />
-                <button
-                  type="button"
-                  @click="
-                    primaryQuant(group)
-                      ? confirmDeleteModel(primaryQuant(group).id)
-                      : confirmDeleteGroup(group.huggingface_id)
-                  "
-                >
-                  Delete
-                </button>
-              </details>
             </div>
             <div
               v-if="primaryQuant(group) && primaryQuant(group).downloaded_at"
               class="safetensors-header__footer"
             >
               <span class="downloaded-at">
-                Downloaded {{ formatDate(primaryQuant(group).downloaded_at) }}
+                Downloaded {{ formatLibraryDate(primaryQuant(group).downloaded_at) }}
               </span>
             </div>
           </div>
@@ -542,8 +349,11 @@
                 :quant="quant"
                 :is-starting="isQuantStarting(quant)"
                 :is-stopping="isQuantStopping(quant)"
-                :format-bytes="formatBytes"
-                :format-date="formatDate"
+                :format-bytes="formatLibraryBytes"
+                :format-date="formatLibraryDate"
+                selectable
+                :selected="isSelected(quant.id)"
+                @select="toggleSelection"
                 @start="startModel"
                 @stop="stopModel"
                 @configure="configureModel"
@@ -555,131 +365,14 @@
           </Transition>
         </div>
       </div>
-    </div>
+    </PageSection>
 
-    <Dialog
-      v-model:visible="showLocalImport"
-      modal
-      header="Import a local model"
-      :style="{ width: 'min(42rem, 95vw)' }"
-    >
-      <p>
-        Studio references the existing files. Removing this library entry does not delete them.
-        Files must be in a configured model folder.
-      </p>
-      <p>
-        Choose companions only when you have confirmed that they match this exact model and engine.
-        An MTP filename alone does not establish compatibility.
-      </p>
-      <form @submit.prevent="importLocalModel" style="display: grid; gap: 0.8rem">
-        <label
-          >Display name
-          <input v-model="localImport.name" style="width: 100%" placeholder="Optional"
-        /></label>
-        <label
-          >Hugging Face repository
-          <input
-            v-model="localImport.huggingface_repo"
-            style="width: 100%"
-            placeholder="Optional · owner/repo or https://huggingface.co/owner/repo"
-            aria-describedby="local-import-repo-note"
-          />
-        </label>
-        <small id="local-import-repo-note">
-          Optional provenance link. Enter the repository you believe matches these files; Studio
-          does not verify that they came from it.
-        </small>
-        <div>
-          <Button
-            type="button"
-            label="Find repository suggestions"
-            severity="secondary"
-            outlined
-            :loading="localSourceSearchBusy"
-            :disabled="localSourceSearchBusy"
-            @click="searchLocalSourceMatches"
-          />
-          <small> Suggestions are search results only. Review and choose a match yourself. </small>
-          <p v-if="localSourceSearchError" role="alert">{{ localSourceSearchError }}</p>
-          <ul v-if="localSourceSearchResults.length" aria-label="Hugging Face repository suggestions">
-            <li v-for="result in localSourceSearchResults" :key="result.modelId || result.id">
-              <button
-                type="button"
-                @click="localImport.huggingface_repo = result.modelId || result.id"
-              >
-                {{ result.modelId || result.id }}
-              </button>
-            </li>
-          </ul>
-        </div>
-        <label
-          >Model GGUF path <input v-model="localImport.weight_path" style="width: 100%" required
-        /></label>
-        <label
-          >Matching mmproj path
-          <input v-model="localImport.mmproj_path" style="width: 100%" placeholder="Optional"
-        /></label>
-        <label
-          >Matching MTP draft path
-          <input v-model="localImport.mtp_path" style="width: 100%" placeholder="Optional"
-        /></label>
-        <p v-if="localImportError" role="alert">{{ localImportError }}</p>
-        <Button type="submit" label="Add to library" :loading="localImportBusy" />
-      </form>
-    </Dialog>
+    <LibraryToast @configure="configureModel" />
 
-    <!-- HuggingFace Token Dialog -->
-    <Dialog
-      v-model:visible="showTokenDialog"
-      header="HuggingFace Token"
-      modal
-      class="dialog-width-sm"
-    >
-      <div class="token-form">
-        <PersistenceAlert
-          :notice="tokenNotice"
-          @retry="retryTokenAction"
-          @refresh="refreshTokenSave"
-        />
-        <p class="token-desc">Required to access gated models (e.g. Llama, Gemma).</p>
-        <div class="form-field">
-          <label for="hf-token">Token</label>
-          <Password
-            v-model="tokenInput"
-            input-id="hf-token"
-            placeholder="hf_…"
-            :feedback="false"
-            toggleMask
-            class="w-full"
-          />
-        </div>
-        <div v-if="modelStore.hasHuggingfaceToken" class="token-current">
-          <i class="pi pi-check-circle token-current__icon" aria-hidden="true" />
-          <span>Token set: {{ modelStore.huggingfaceToken || '••••••••' }}</span>
-          <Button
-            label="Clear"
-            severity="danger"
-            text
-            size="small"
-            :disabled="tokenSaveHeld"
-            @click="clearToken"
-          />
-        </div>
-      </div>
-      <template #footer>
-        <Button label="Cancel" severity="secondary" outlined @click="showTokenDialog = false" />
-        <Button
-          label="Save Token"
-          icon="pi pi-save"
-          severity="success"
-          :disabled="!tokenInput || tokenSaveHeld"
-          :loading="savingToken"
-          @click="saveToken"
-        />
-      </template>
-    </Dialog>
+    <HuggingFaceTokenDialog v-model:visible="showTokenDialog" />
 
     <ConnectDialog
+      v-if="connectVisible"
       v-model:visible="connectVisible"
       :model="connectModel"
       :proxy-port="proxyPort"
@@ -696,33 +389,41 @@ import {
   taskLabel,
   formatLabel,
 } from '@/utils/modelPresentation'
-import { isAudioPackage } from '@/utils/audioModel'
-import { huggingFaceSourceUrl, normalizeHuggingFaceRepo } from '@/utils/modelSource'
+import {
+  buildLibraryLines,
+  formatLibraryBytes,
+  formatLibraryDate,
+  groupEngine,
+  groupIsRunning,
+  groupNeedsAttention,
+  groupRecentStamp,
+  groupRuntimeQuality,
+  groupTitle,
+  isStandaloneGroup,
+  primaryQuant,
+  prettyEngine,
+  quantStatus,
+  groupTotalFileSize,
+} from '@/utils/libraryPresentation'
+import { formatAxiosDetail } from '@/utils/apiErrors'
+import { useLibrarySelection } from '@/composables/useLibrarySelection'
+import { createDownloadSetupAnnouncer } from '@/composables/useDownloadSetupToast'
 import { useQueryState } from '@/composables/useQueryState'
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import axios from 'axios'
 import { watchDialogFocus } from '@/composables/useFocusReturn'
-import { useRouter } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
-import PersistenceAlert from '@/components/common/PersistenceAlert.vue'
-import {
-  classifyPersistenceError,
-  noteDocumentSaveFailure,
-  saveHeldForRefresh,
-} from '@/composables/persistenceOutcome'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
-import Dialog from 'primevue/dialog'
-import Password from 'primevue/password'
 import ModelRow from '@/components/ModelRow.vue'
-import ModelStartStopButton from '@/components/ModelStartStopButton.vue'
-import ModelWarmupButton from '@/components/ModelWarmupButton.vue'
+import ModelCardActions from '@/components/models/ModelCardActions.vue'
+import LibraryTransitionStatus from '@/components/models/LibraryTransitionStatus.vue'
+import LibraryToast from '@/components/models/LibraryToast.vue'
+import LibraryBulkActions from '@/components/models/LibraryBulkActions.vue'
 import { useModelStore } from '@/stores/models'
 import { useProgressStore } from '@/stores/progress'
 import { audioTabFromConfig } from '@/composables/useAudioInferenceClient'
-import { defaultEngineForFormat } from '@/engines/registry'
-import { engineLabel } from '@/composables/engineVersionDelete'
 import { requireSingleConfirmation } from '@/composables/singleConfirm'
 import {
   versionDeleteErrorText,
@@ -730,58 +431,29 @@ import {
   withheldConfirmation,
 } from '@/composables/actionConfirmation'
 import PageHeader from '@/components/common/PageHeader.vue'
+import PageSection from '@/components/common/PageSection.vue'
+import PageToolbar from '@/components/common/PageToolbar.vue'
+import StateBanner from '@/components/common/StateBanner.vue'
 import LoadingState from '@/components/common/LoadingState.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
-import SetupChecklist from '@/components/common/SetupChecklist.vue'
-import ConnectDialog from '@/components/common/ConnectDialog.vue'
+import {
+  ConnectDialog,
+  FirstModelPanel,
+  HuggingFaceTokenDialog,
+  HuggingFaceTokenNotice,
+  LibraryListView,
+  LibraryToolbar,
+  SetupChecklist,
+} from '@/components/models/lazyLibraryUi'
 import { useEnginesStore } from '@/stores/engines'
 
 const router = useRouter()
 const confirm = useConfirm()
 const toast = useToast()
 const modelStore = useModelStore()
-const showLocalImport = ref(false)
-const localImportBusy = ref(false)
-const localImportError = ref('')
-const localSourceSearchBusy = ref(false)
-const localSourceSearchError = ref('')
-const localSourceSearchResults = ref([])
-const localImport = ref({ name: '', weight_path: '', mmproj_path: '', mtp_path: '', huggingface_repo: '' })
-async function searchLocalSourceMatches() {
-  const rawQuery = String(localImport.value.huggingface_repo || localImport.value.name || '').trim()
-  const query = normalizeHuggingFaceRepo(rawQuery) || rawQuery
-  if (!query) {
-    localSourceSearchError.value = 'Enter a repository or model name to search.'
-    return
-  }
-  localSourceSearchBusy.value = true
-  localSourceSearchError.value = ''
-  try {
-    localSourceSearchResults.value = await modelStore.searchModels(query, 8, 'gguf')
-  } catch (error) {
-    localSourceSearchError.value = error?.response?.data?.detail || error.message || 'Search failed'
-  } finally {
-    localSourceSearchBusy.value = false
-  }
-}
-async function importLocalModel() {
-  localImportBusy.value = true
-  localImportError.value = ''
-  try {
-    await axios.post('/api/models/import-local', localImport.value)
-    await modelStore.fetchModels()
-    showLocalImport.value = false
-    localImport.value = { name: '', weight_path: '', mmproj_path: '', mtp_path: '', huggingface_repo: '' }
-    localSourceSearchResults.value = []
-    toast.add({ severity: 'success', summary: 'Local model added', life: 3000 })
-  } catch (error) {
-    localImportError.value = error?.response?.data?.detail || error.message || 'Import failed'
-  } finally {
-    localImportBusy.value = false
-  }
-}
 const progressStore = useProgressStore()
 const enginesStore = useEnginesStore()
+const announceDownloadedSetup = createDownloadSetupAnnouncer({ modelStore, toast })
 const connectVisible = ref(false)
 const connectModel = ref(null)
 const proxyPort = computed(() => enginesStore.systemStatus?.proxy_status?.port || 2000)
@@ -871,21 +543,25 @@ useQueryState(
     ]),
   ),
 )
+const libraryPresetFilters = computed(() => ({
+  q: libraryQuery.value,
+  status: statusFilter.value,
+  engine: engineFilter.value,
+  task: taskFilter.value,
+  sort: sortBy.value,
+}))
+function applyLibraryPreset(filters) {
+  libraryQuery.value = filters?.q ?? ''
+  statusFilter.value = filters?.status ?? 'all'
+  engineFilter.value = filters?.engine ?? 'all'
+  taskFilter.value = filters?.task ?? 'all'
+  sortBy.value = filters?.sort ?? 'name'
+}
 const startingModels = ref(new Set())
 const stoppingModels = ref(new Set())
 const showTokenDialog = ref(false)
 watchDialogFocus(connectVisible)
 watchDialogFocus(showTokenDialog)
-const tokenInput = ref('')
-const tokenNotice = ref(null)
-const tokenAction = ref('save')
-const tokenSaveHeld = computed(() => saveHeldForRefresh(tokenNotice.value))
-
-function retryTokenAction() {
-  if (tokenAction.value === 'clear') void clearToken()
-  else void saveToken()
-}
-const savingToken = ref(false)
 const catalogRefreshInFlight = ref(false)
 const FAST_POLL_MS = 1000
 const IDLE_POLL_MS = 5000
@@ -959,33 +635,20 @@ const runtimeOutage = computed(() => {
 
 const catalogFailed = computed(() => Boolean(modelStore.modelsError) && !modelStore.loading)
 
-function groupEngine(group) {
-  const quant = primaryQuant(group)
-  return (
-    (quant?.config && quant.config.engine) || (quant ? defaultEngineForFormat(quant.format) : '')
-  )
-}
-
-function groupRuntimeQuality(group) {
-  const quants = group?.quantizations || []
-  if (quants.some((quant) => quant?.runtime_quality === 'unreachable')) return 'unreachable'
-  if (quants.some((quant) => quant?.runtime_quality === 'stale')) return 'stale'
-  return 'verified'
-}
-
-function groupNeedsAttention(group) {
-  if (groupRuntimeQuality(group) !== 'verified') return true
-  return (group?.quantizations || []).some((quant) => {
-    const status = quantStatus(quant)
-    return status === 'failed' || status === 'error' || quant?.last_error
+/** Runtime state for a single quantization, including in-flight transitions. */
+function quantRuntimeState(quant) {
+  return modelRuntimeState(quant, {
+    isStarting: isQuantStarting(quant),
+    isStopping: isQuantStopping(quant),
   })
 }
 
-function groupRecentStamp(group) {
-  const stamps = (group?.quantizations || []).map(
-    (quant) => Date.parse(quant?.last_used_at || quant?.downloaded_at || '') || 0,
-  )
-  return Math.max(0, ...stamps)
+/** Group status follows an in-flight transition before its settled state. */
+function groupDisplayState(group) {
+  const transition = (group?.quantizations || [])
+    .map((quant) => quantRuntimeState(quant))
+    .find((state) => state.key === 'starting' || state.key === 'stopping')
+  return transition || groupRuntimeState(group)
 }
 
 const engineChoices = computed(() => {
@@ -998,6 +661,16 @@ const taskChoices = computed(() => {
   sourceGroups.value.forEach((group) => (group.tasks || []).forEach((task) => values.add(task)))
   return [...values].sort()
 })
+
+const engineOptions = computed(() => [
+  { label: 'Any engine', value: 'all' },
+  ...engineChoices.value.map((engine) => ({ label: prettyEngine(engine), value: engine })),
+])
+
+const taskOptions = computed(() => [
+  { label: 'Any task', value: 'all' },
+  ...taskChoices.value.map((task) => ({ label: taskLabel(task), value: taskLabel(task) })),
+])
 
 const displayGroups = computed(() => {
   const query = libraryQuery.value.trim().toLowerCase()
@@ -1034,115 +707,61 @@ const displayGroups = computed(() => {
   return groups
 })
 
-function prettyEngine(engineId) {
-  if (!engineId) return ''
-  const label = engineLabel(engineId)
-  return label === 'another engine' ? String(engineId) : label
-}
+const libraryLines = computed(() =>
+  buildLibraryLines(displayGroups.value, { stateFor: quantRuntimeState }),
+)
 
-function formatKind(format) {
-  if (format === 'gguf') return 'GGUF'
-  if (format === 'safetensors') return 'Safetensors'
-  return ''
-}
-
-function sameIdentity(left, right) {
-  const normalize = (value) =>
-    String(value || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '')
-  const a = normalize(left)
-  const b = normalize(right)
-  return Boolean(a) && a === b
-}
-
-function listMeta(group, quant, includeVariant) {
-  const title = groupTitle(group)
-  const parts = []
-  const repo = group?.huggingface_id
-  if (repo && !sameIdentity(title, repo)) parts.push(repo)
-  const engine = prettyEngine(quant?.config?.engine || groupEngine(group))
-  if (engine) parts.push(engine)
-  const variant = quant?.quantization
-  const showVariant = includeVariant && variant && variant !== title
-  const kind = formatKind(quant?.format)
-  if (kind && !showVariant) parts.push(kind)
-  if (showVariant) parts.push(variant)
-  const taskLabels = { asr: 'ASR', tts: 'Speech', embeddings: 'Embeddings' }
-  const tasks = (quant?.tasks || group?.tasks || [])
-    .filter((task) => task && task !== 'text-generation')
-    .slice(0, 2)
-    .map((task) => taskLabels[task] || task)
-  if (tasks.length) parts.push(tasks.join(', '))
-  return parts.join(' · ')
-}
-
-function notableStatus(quant) {
-  const state = modelRuntimeState(quant)
-  return state.key === 'stopped' ? null : state
-}
-
-function lineIsRunning(quant) {
-  if (!quant || quant.runtime_quality === 'unreachable') return false
-  const status = quantStatus(quant)
-  return Boolean(quant.is_active) || status === 'ready' || status === 'loading'
-}
-
-const libraryLines = computed(() => {
-  const lines = []
-  for (const group of displayGroups.value) {
-    const quants = group.quantizations || []
-    const title = groupTitle(group)
-    if (quants.length > 1) {
-      lines.push({
-        key: `group:${group.huggingface_id}`,
-        kind: 'group',
-        title,
-        meta: listMeta(group, primaryQuant(group), false),
-        size: groupTotalFileSize(group) ? formatBytes(groupTotalFileSize(group)) : '',
-        status: '',
-        statusKey: '',
-        running: groupIsRunning(group),
-        groupId: group.huggingface_id,
-        quant: null,
-      })
-      for (const quant of quants) {
-        const status = notableStatus(quant)
-        lines.push({
-          key: quant.id,
-          kind: 'variant',
-          title: quant.quantization || quant.name || 'Variant',
-          meta: '',
-          size: quant.file_size ? formatBytes(quant.file_size) : '',
-          status: status?.label || '',
-          statusKey: status?.key || '',
-          running: lineIsRunning(quant),
-          quant,
-          groupId: group.huggingface_id,
-        })
-      }
-      continue
-    }
-    const quant = quants[0] || null
-    const status = quant ? notableStatus(quant) : null
-    lines.push({
-      key: quant?.id || group.huggingface_id,
-      kind: 'single',
-      title,
-      meta: listMeta(group, quant, true),
-      size: quant?.file_size ? formatBytes(quant.file_size) : '',
-      status: status?.label || '',
-      statusKey: status?.key || '',
-      running: lineIsRunning(quant),
-      quant,
-      groupId: group.huggingface_id,
-    })
+/** Quantizations represented by a visible checkbox in the current layout. */
+const selectableQuants = computed(() => {
+  if (viewMode.value === 'list') {
+    return libraryLines.value.flatMap((line) => (line.quant ? [line.quant] : []))
   }
-  return lines
+  return displayGroups.value.flatMap((group) => {
+    if (isStandaloneGroup(group)) {
+      const quant = primaryQuant(group)
+      return quant ? [quant] : []
+    }
+    if (!expandedGroups.value.has(group.huggingface_id)) return []
+    return group.quantizations || []
+  })
 })
-
-function groupTitle(group) {
-  return group?.base_model_name || group?.huggingface_id || 'Model'
+const selectableQuantIds = computed(() =>
+  selectableQuants.value.map((quant) => quant.id).filter(Boolean),
+)
+const libraryFilterKey = computed(() =>
+  [libraryQuery.value.trim(), statusFilter.value, engineFilter.value, taskFilter.value].join('|'),
+)
+const {
+  selectedIds,
+  summary: selectionSummary,
+  isSelected,
+  toggle: toggleSelection,
+  toggleSelectAll,
+  clearSelection,
+} = useLibrarySelection({ visibleIds: selectableQuantIds, filterKey: libraryFilterKey })
+const transitionIds = computed(() => [...startingModels.value, ...stoppingModels.value])
+const transitionEntries = computed(() => {
+  const entries = []
+  for (const id of startingModels.value) {
+    const quant = findQuantById(id)
+    entries.push({ id, label: quant?.quantization || quant?.name || id, verb: 'Starting' })
+  }
+  for (const id of stoppingModels.value) {
+    const quant = findQuantById(id)
+    entries.push({ id, label: quant?.quantization || quant?.name || id, verb: 'Stopping' })
+  }
+  return entries
+})
+function refreshModelStatus() {
+  void retryCatalogs()
+}
+const selectedModels = computed(() => {
+  const selected = new Set(selectedIds.value)
+  return selectableQuants.value.filter((quant) => selected.has(String(quant.id)))
+})
+function onBulkComplete(result) {
+  if (result?.done) clearSelection()
+  queueCatalogPoll()
 }
 
 function setViewMode(mode) {
@@ -1159,31 +778,6 @@ const totalModels = computed(() =>
 )
 
 // ── Group expand/collapse ──────────────────────────────────
-function isStandaloneGroup(group) {
-  if (!group || !Array.isArray(group.quantizations) || !group.quantizations.length) return false
-  if (group.quantizations.length === 1) return true
-  return group.quantizations.every(
-    (q) =>
-      q.format === 'safetensors' ||
-      ['prepared_bundle', 'builtin'].includes(q.artifact?.package_kind),
-  )
-}
-
-function primaryQuant(group) {
-  if (!group || !Array.isArray(group.quantizations) || !group.quantizations.length) return null
-  return group.quantizations[0]
-}
-
-function groupIsRunning(group) {
-  return (group?.quantizations || []).some((quant) => lineIsRunning(quant))
-}
-
-/** Sum of file_size across all quantizations in a GGUF group (bytes). */
-function groupTotalFileSize(group) {
-  if (!group?.quantizations?.length) return 0
-  return group.quantizations.reduce((sum, q) => sum + (Number(q.file_size) || 0), 0)
-}
-
 function toggleGroup(hfId) {
   if (expandedGroups.value.has(hfId)) {
     expandedGroups.value.delete(hfId)
@@ -1202,10 +796,6 @@ function modelIdKey(id) {
   return String(id)
 }
 
-function quantStatus(quant) {
-  return String(quant?.status || quant?.run_state || '').toLowerCase()
-}
-
 function openConnect(quant) {
   connectModel.value = quant
   connectVisible.value = true
@@ -1213,28 +803,6 @@ function openConnect(quant) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function formatAxiosDetail(e) {
-  const payload = e?.response?.data
-  const d = payload?.detail ?? payload
-  if (typeof d === 'string') return d
-  if (Array.isArray(d)) {
-    return d
-      .map((x) =>
-        typeof x === 'object' && x?.msg
-          ? `${Array.isArray(x.loc) ? x.loc.join('.') : ''}: ${x.msg}`.replace(/^\.\s*/, '')
-          : String(x),
-      )
-      .filter(Boolean)
-      .join('; ')
-  }
-  if (d && typeof d === 'object') {
-    if (typeof d.msg === 'string') return d.msg
-    if (typeof d.message === 'string') return d.message
-    if (typeof d.error === 'string') return d.error
-  }
-  return e?.message || 'Request failed'
 }
 
 function findQuantById(modelId) {
@@ -1261,8 +829,29 @@ function modelRunState(quant) {
 
 function modelHasStarted(quant) {
   if (!quant) return false
-  const quality = String(quant.runtime_quality || '').toLowerCase()
-  return quality === 'verified' && modelRunState(quant) === 'running'
+  return modelRuntimeState(quant).key === 'running'
+}
+
+function modelHasFailed(quant) {
+  if (!quant) return false
+  return modelRuntimeState(quant).key === 'error'
+}
+
+function modelDisplayName(modelId) {
+  const quant = findQuantById(modelId)
+  return quant?.quantization || quant?.name || String(modelId)
+}
+
+/** Failures land in the library toast so Configure stays one click away. */
+function notifyStartFailure(modelId, detail) {
+  toast.add({
+    severity: 'error',
+    summary: 'Failed to start',
+    detail,
+    life: 7000,
+    group: 'model-library',
+    configureModelId: modelId,
+  })
 }
 
 function isQuantStopping(quant) {
@@ -1340,7 +929,7 @@ async function startModel(modelId, confirmation = null) {
     const deadline = Date.now() + START_CONFIRM_MS
     while (Date.now() < deadline && !catalogDisposed) {
       const quant = findQuantById(modelId)
-      if (modelHasStarted(quant)) break
+      if (modelHasStarted(quant) || modelHasFailed(quant) || stoppingModels.value.has(k)) break
       if (!startingNoted && modelRunState(quant) === 'loading') {
         startingNoted = true
         toast.add({ severity: 'info', summary: 'Model is starting', life: 3000 })
@@ -1353,26 +942,37 @@ async function startModel(modelId, confirmation = null) {
     } catch {
       /* The following toast reports that startup was not confirmed. */
     }
-    if (modelHasStarted(findQuantById(modelId))) {
-      toast.add({ severity: 'success', summary: 'Model started', life: 3000 })
+    const quant = findQuantById(modelId)
+    if (stoppingModels.value.has(k)) {
+      /* The user cancelled this start with Stop; the stop toast reports the outcome. */
+    } else if (modelHasStarted(quant)) {
+      toast.add({
+        severity: 'success',
+        summary: 'Model started',
+        detail: `${modelDisplayName(modelId)} is running.`,
+        life: 3000,
+      })
+    } else if (modelHasFailed(quant)) {
+      notifyStartFailure(
+        modelId,
+        quant?.last_error || 'The model reported a failure while starting.',
+      )
     } else {
       toast.add({
         severity: 'warn',
         summary: 'Startup not confirmed',
         detail: 'The model was not observed running. Refresh finished; you can start it again.',
-        life: 5000,
+        life: 7000,
+        group: 'model-library',
+        configureModelId: modelId,
       })
     }
   } catch (e) {
     if (!confirmation && confirmWithheldAction(e, 'start', (pair) => startModel(modelId, pair))) {
       return
     }
-    toast.add({
-      severity: 'error',
-      summary: 'Failed to start',
-      detail: formatAxiosDetail(e),
-      life: 4000,
-    })
+    await refreshCatalogs().catch(() => {})
+    notifyStartFailure(modelId, formatAxiosDetail(e))
   } finally {
     startingModels.value.delete(k)
     startingModels.value = new Set(startingModels.value)
@@ -1382,6 +982,8 @@ async function startModel(modelId, confirmation = null) {
 
 async function stopModel(modelId, confirmation = null) {
   const k = modelIdKey(modelId)
+  startingModels.value.delete(k)
+  startingModels.value = new Set(startingModels.value)
   stoppingModels.value.add(k)
   stoppingModels.value = new Set(stoppingModels.value)
   queueCatalogPoll(FAST_POLL_MS)
@@ -1420,11 +1022,6 @@ function configureModel(modelId) {
   router.push(`/models/${encodeURIComponent(modelId)}/config`)
 }
 
-function isAudioQuant(quant) {
-  if (!quant) return false
-  return isAudioPackage(quant)
-}
-
 function openAudio(modelId) {
   const quant = modelStore.allQuantizations.find((m) => m.id === modelId)
   const tab = audioTabFromConfig({
@@ -1460,12 +1057,8 @@ async function performModelDelete(run, params, summary = 'Model removed') {
 }
 
 function confirmDeleteModel(modelId) {
-  const local =
-    modelStore.allQuantizations.find((q) => q.id === modelId)?.source?.provider === 'local'
   requireSingleConfirmation(confirm, {
-    message: local
-      ? 'Remove this library entry? Your original model files will be kept.'
-      : 'Remove this model from the library? Downloaded files will be deleted from disk.',
+    message: 'Remove this model from the library? Downloaded files will be deleted from disk.',
     header: 'Confirm Remove',
     icon: 'pi pi-exclamation-triangle',
     acceptClass: 'p-button-danger',
@@ -1488,96 +1081,6 @@ function confirmDeleteGroup(huggingfaceId) {
   })
 }
 
-// ── Token management ───────────────────────────────────────
-async function refreshTokenSave() {
-  const draft = tokenInput.value
-  try {
-    await modelStore.fetchHuggingfaceTokenStatus()
-    tokenNotice.value = null
-    return true
-  } catch {
-    tokenInput.value = draft
-    tokenNotice.value = classifyPersistenceError(new Error('reload failed'))
-    return false
-  }
-}
-
-async function saveToken() {
-  savingToken.value = true
-  const draft = tokenInput.value
-  try {
-    await modelStore.setHuggingfaceToken(tokenInput.value)
-    tokenInput.value = ''
-    showTokenDialog.value = false
-    tokenNotice.value = null
-    toast.add({ severity: 'success', summary: 'Token saved', life: 3000 })
-  } catch (e) {
-    tokenInput.value = draft
-    tokenAction.value = 'save'
-    const outcome = noteDocumentSaveFailure(toast, e)
-    if (outcome) {
-      tokenNotice.value = outcome
-      if (outcome.committed === true) {
-        const reloaded = await refreshTokenSave()
-        tokenInput.value = draft
-        tokenNotice.value = reloaded
-          ? { ...outcome, refresh: false, retry: false }
-          : {
-              ...outcome,
-              detail:
-                'The document was replaced, but it could not be reloaded. Your edits are still here. Refresh before trying again.',
-              refresh: true,
-              retry: false,
-            }
-        if (reloaded) tokenInput.value = ''
-      }
-    } else {
-      toast.add({ severity: 'error', summary: 'Failed', detail: e.message, life: 4000 })
-    }
-  } finally {
-    savingToken.value = false
-  }
-}
-
-async function clearToken() {
-  try {
-    await modelStore.clearHuggingfaceToken()
-    tokenNotice.value = null
-    toast.add({ severity: 'info', summary: 'Token cleared', life: 3000 })
-  } catch (e) {
-    tokenAction.value = 'clear'
-    const outcome = noteDocumentSaveFailure(toast, e)
-    if (outcome) tokenNotice.value = outcome
-    else toast.add({ severity: 'error', summary: 'Failed', detail: e.message, life: 4000 })
-  }
-}
-
-// ── Formatters ─────────────────────────────────────────────
-// Decimal (1000) so MB/GB match Hugging Face
-function formatBytes(bytes) {
-  if (!bytes) return ''
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let i = 0
-  let val = bytes
-  while (val >= 1000 && i < units.length - 1) {
-    val /= 1000
-    i++
-  }
-  return `${val.toFixed(1)} ${units[i]}`
-}
-
-function formatDate(iso) {
-  if (!iso) return ''
-  try {
-    return new Intl.RelativeTimeFormat('en', { numeric: 'auto' }).format(
-      Math.round((new Date(iso) - Date.now()) / 86400000),
-      'day',
-    )
-  } catch {
-    return iso.slice(0, 10)
-  }
-}
-
 // ── Lifecycle ──────────────────────────────────────────────
 onMounted(() => {
   try {
@@ -1586,8 +1089,9 @@ onMounted(() => {
   } catch {
     /* ignore */
   }
-  unsubscribeDownloadComplete = progressStore.subscribeToDownloadComplete(() => {
-    refreshCatalogs()
+  unsubscribeDownloadComplete = progressStore.subscribeToDownloadComplete(async (payload) => {
+    await refreshCatalogs()
+    announceDownloadedSetup(payload)
   })
   catalogDisposed = false
   document.addEventListener('visibilitychange', onLibraryVisibility)
@@ -1623,45 +1127,11 @@ onUnmounted(() => {
 
 /* layout: .page-shell */
 
-/* ── Token warning ────────────────────────────────────── */
-.token-warning {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 0;
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-}
-
-.token-warning__text {
-  flex: 1 1 12rem;
-  min-width: 0;
-}
-
-.token-warning__action {
-  margin-left: auto;
-}
-
 /* ── Groups ───────────────────────────────────────────── */
-.model-groups {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 0.5rem;
-  align-items: start;
-}
-
-@media (min-width: 769px) {
-  .model-groups {
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 24rem), 1fr));
-    gap: var(--panel-gap);
-  }
-}
-
 .model-group {
-  background: var(--bg-card, #161b2e);
-  border: 1px solid var(--border-primary, #2a2f45);
-  border-radius: var(--radius-lg, 0.75rem);
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
   overflow: hidden;
   container-type: inline-size;
   container-name: model-card;
@@ -1682,13 +1152,13 @@ onUnmounted(() => {
   padding: 0.75rem 1rem;
   cursor: pointer;
   user-select: none;
-  background: var(--bg-surface, #1e2235);
+  background: var(--bg-surface);
   transition: background 0.15s;
   gap: 0.35rem 0.5rem;
 }
 
 .group-header:hover {
-  background: var(--bg-card-hover, #232a42);
+  background: var(--bg-card-hover);
 }
 
 .group-header .group-title {
@@ -1711,7 +1181,7 @@ onUnmounted(() => {
 }
 
 .safetensors-header:hover {
-  background: var(--bg-surface, #1e2235);
+  background: var(--bg-surface);
 }
 
 .safetensors-header > .group-title {
@@ -1795,13 +1265,13 @@ onUnmounted(() => {
   display: block;
   font-size: var(--text-xs);
   line-height: 1.15;
-  color: var(--text-muted, var(--text-secondary, #9ca3af));
+  color: var(--text-secondary);
   opacity: 0.9;
 }
 
 .group-chevron {
   font-size: var(--text-xs);
-  color: var(--text-secondary, #9ca3af);
+  color: var(--text-secondary);
 }
 
 .group-name {
@@ -1825,30 +1295,17 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.hf-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  color: var(--accent-cyan, #22d3ee);
-  font-size: 0.8125rem;
-  text-decoration: none;
-}
-
-.hf-link:hover {
-  text-decoration: underline;
-}
-
 .group-delete-preview {
   font-size: var(--text-xs);
   line-height: 1.25;
-  color: var(--text-secondary, #9ca3af);
+  color: var(--text-secondary);
   white-space: nowrap;
   user-select: none;
 }
 
 .group-meta small {
   font-size: var(--text-xs);
-  color: var(--text-secondary, #9ca3af);
+  color: var(--text-secondary);
   font-family: monospace;
   max-width: 200px;
   overflow: hidden;
@@ -1887,9 +1344,9 @@ onUnmounted(() => {
   align-items: start;
   justify-items: stretch;
   padding: 0.5rem 0.75rem;
-  background: var(--bg-surface, #1e2235);
-  border: 1px solid var(--border-primary, #2a2f45);
-  border-radius: var(--radius-md, 0.5rem);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
   transition:
     border-color 0.15s ease,
     box-shadow 0.2s ease,
@@ -1931,7 +1388,7 @@ onUnmounted(() => {
   display: block;
   font-size: var(--text-xs);
   line-height: 1.15;
-  color: var(--text-muted, var(--text-secondary, #9ca3af));
+  color: var(--text-secondary);
   opacity: 0.9;
 }
 
@@ -1982,7 +1439,7 @@ onUnmounted(() => {
 :deep(.quant-heading .file-size) {
   font-size: var(--text-xs);
   line-height: 1.25;
-  color: var(--text-secondary, #9ca3af);
+  color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1993,74 +1450,23 @@ onUnmounted(() => {
   color: var(--text-secondary);
 }
 
-.library-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  margin-bottom: 0.65rem;
-  gap: 0.75rem;
-}
-
-.library-filter {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  flex: 0 1 auto;
-  min-width: 0;
-  gap: 0.4rem;
-}
-
-.library-toolbar label {
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
-.library-search,
-.library-toolbar select {
-  min-height: 2.25rem;
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-md);
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  padding: 0.2rem 0.5rem;
-}
-
-.library-search {
-  flex: 1 1 14rem;
-  width: auto;
-  min-width: 10rem;
-}
-
-.library-view {
-  display: inline-flex;
-  gap: 0.25rem;
-}
-
-.library-view button,
-.row-menu summary,
-.row-menu button {
-  min-height: 2.25rem;
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-md);
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.8rem;
-  padding: 0.2rem 0.55rem;
-}
-
-.library-view button[aria-pressed='true'] {
-  border-color: var(--accent-cyan);
-  font-weight: 700;
-}
-
 .row-menu {
   position: relative;
 }
 
 .row-menu summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2rem;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
   list-style: none;
 }
 
@@ -2068,18 +1474,18 @@ onUnmounted(() => {
   display: none;
 }
 
-.row-menu[open] {
-  position: relative;
-}
-
 .row-menu button {
   display: block;
   width: 100%;
   margin-top: 0.25rem;
-}
-
-.row-menu > button:not(.p-button) {
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
   color: var(--status-error);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
 }
 
 .group-repo {
@@ -2087,262 +1493,7 @@ onUnmounted(() => {
   font-size: var(--text-xs);
 }
 
-.library-list {
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-md);
-  background: var(--bg-secondary);
-}
-
-.library-list__head,
-.library-list__row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 8rem 7.5rem 20rem;
-  gap: 1rem;
-  align-items: center;
-  padding: 0.75rem 1rem;
-}
-
-.library-list__head {
-  min-height: 2.75rem;
-  font-size: var(--text-xs);
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
-  background: var(--bg-tertiary);
-}
-
-.library-list__row {
-  min-height: 2.75rem;
-  border-top: 1px solid var(--border-primary);
-}
-
-.library-list__row--variant {
-  min-height: 2.35rem;
-  background: color-mix(in srgb, var(--bg-tertiary) 45%, transparent);
-}
-
-.library-list__row--variant .library-list__name {
-  padding-left: 0.85rem;
-  font-weight: 550;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.82rem;
-}
-
-.library-list__row.is-running {
-  box-shadow: inset 2px 0 0 var(--accent-green);
-}
-
-.library-list__model {
-  min-width: 0;
-}
-
-.library-list__title {
-  display: flex;
-  align-items: baseline;
-  gap: 0.45rem;
-  min-width: 0;
-}
-
-.library-list__name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  font-weight: 650;
-}
-
-.library-list__meta {
-  margin-top: 0.05rem;
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.library-list__status {
-  flex: none;
-  font-size: var(--text-xs);
-  font-weight: 650;
-}
-
-.library-list__status[data-status='running'],
-.library-list__status[data-status='ready'] {
-  color: var(--status-success);
-}
-
-.library-list__status[data-status='loading'] {
-  color: var(--status-warning, #f59e0b);
-}
-
-.library-list__status[data-status='error'] {
-  color: var(--status-error);
-}
-
-.library-list__size {
-  font-size: 0.82rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-  text-align: right;
-  display: grid;
-  gap: 0.15rem;
-  white-space: nowrap;
-}
-.library-list__size small {
-  font-size: var(--text-xs);
-  font-weight: 400;
-}
-.library-list__size-heading {
-  text-align: right;
-}
-.library-list__status--quiet {
-  color: var(--text-secondary);
-  font-weight: 400;
-}
-.library-list__actions-heading {
-  padding-left: 1rem;
-}
-
-.library-list__actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.35rem;
-  padding-left: 1rem;
-  border-left: 1px solid var(--border-primary);
-  min-width: 0;
-}
-
-.library-list__actions :deep(.p-button) {
-  min-width: 2.75rem;
-}
-
-.library-list .row-menu summary.library-list__more {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  min-height: 2.75rem;
-  padding: 0;
-}
-
-.library-list .row-menu[open] {
-  position: relative;
-}
-
-.library-list .row-menu[open] > button {
-  position: absolute;
-  right: 0;
-  z-index: 2;
-  width: max-content;
-  margin-top: 0.15rem;
-  padding: 0.35rem 0.6rem;
-  background: var(--bg-secondary);
-  box-shadow: var(--shadow-md, 0 8px 24px rgb(0 0 0 / 0.28));
-}
-
-@media (max-width: 1100px) {
-  .library-list__head,
-  .library-list__row {
-    grid-template-columns: minmax(0, 1fr) 8rem 7.5rem;
-    grid-template-areas: 'model state size' 'actions actions actions';
-    gap: 0.65rem 1rem;
-  }
-  .library-list__head {
-    grid-template-areas: 'model state size';
-  }
-  .library-list__actions-heading {
-    display: none;
-  }
-  .library-list__model {
-    grid-area: model;
-  }
-  .library-list__state {
-    grid-area: state;
-  }
-  .library-list__size {
-    grid-area: size;
-  }
-  .library-list__actions {
-    grid-area: actions;
-    justify-content: flex-start;
-    padding: 0.5rem 0 0;
-    border-left: 0;
-    border-top: 1px solid var(--border-primary);
-  }
-  .library-list__row:has(.library-list__actions > .row-menu:only-child) .library-list__actions {
-    padding-top: 0;
-    border-top: 0;
-  }
-}
-
-@media (max-width: 520px) {
-  .library-list__head {
-    display: none;
-  }
-  .library-list__row {
-    grid-template-columns: minmax(0, 1fr) 6.5rem;
-    grid-template-areas: 'model size' 'state size' 'actions actions';
-    padding: 1rem;
-    gap: 0.5rem 0.75rem;
-  }
-  .library-list__size {
-    align-self: start;
-  }
-  .library-list__size::before {
-    content: 'File size';
-    font-size: var(--text-xs);
-    color: var(--text-secondary);
-  }
-  .library-list__meta {
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-}
-
-/* ── Token dialog ─────────────────────────────────────── */
-.token-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-.token-desc {
-  font-size: 0.875rem;
-  color: var(--text-secondary, #9ca3af);
-  margin: 0;
-}
-.form-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-.form-field label {
-  font-size: 0.875rem;
-  font-weight: 500;
-}
-
-.token-current {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.875rem;
-  background: var(--status-success-soft);
-  border: 1px solid color-mix(in srgb, var(--status-success) 35%, transparent);
-  border-radius: var(--radius-md, 0.5rem);
-  padding: 0.5rem 0.75rem;
-}
-
-.token-current__icon {
-  color: var(--status-success);
-}
-
 @media (max-width: 768px) {
-  .token-warning__action {
-    margin-left: 0;
-  }
-
   .group-name {
     white-space: normal;
     overflow: visible;
@@ -2391,40 +1542,33 @@ onUnmounted(() => {
   }
 }
 
-.library-secondary-filters {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-.library-results-summary {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+.library-results-summary :deep(.page-toolbar__summary) {
   gap: 1rem;
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
 }
-.library-results-summary button,
-.library-filters-toggle {
-  border: 1px solid var(--border-secondary);
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  border-radius: var(--radius-sm);
-  padding: 0.5rem 0.75rem;
+
+.library-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
-@media (max-width: 900px) {
-  .library-secondary-filters {
-    flex: 1 1 100%;
-  }
-  .library-filter {
-    flex: 1;
-  }
+.library-select-all input,
+.library-check input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--accent-primary);
 }
 
-/* Card identity and actions each get their own full-width row. */
+.library-check {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
 .safetensors-header {
   flex-direction: column;
   align-items: stretch;
@@ -2452,53 +1596,5 @@ onUnmounted(() => {
   justify-content: flex-start;
   padding-top: 0.75rem;
   border-top: 1px solid var(--border-primary);
-}
-
-@media (max-width: 900px) {
-  .library-toolbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-  .library-search {
-    grid-column: 1 / -1;
-    width: 100%;
-  }
-  .library-toolbar > .library-filter {
-    min-width: 0;
-  }
-  .library-toolbar > .library-filter select {
-    flex: 1;
-    min-width: 0;
-  }
-  .library-secondary-filters {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-  }
-  .library-secondary-filters .library-filter {
-    display: grid;
-    align-items: stretch;
-  }
-  .library-view {
-    grid-column: 1 / -1;
-  }
-}
-
-.library-list__menu-items {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 0.25rem);
-  z-index: 3;
-  display: grid;
-  gap: 0.25rem;
-  width: max-content;
-  padding: 0.4rem;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-secondary);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
-}
-.library-list__menu-items > button:not(.p-button) {
-  color: var(--status-error);
 }
 </style>
